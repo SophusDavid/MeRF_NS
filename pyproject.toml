@@ -1,0 +1,10 @@
+[project]
+name = "merf_ns"
+version = "0.1.0"
+
+dependencies=[
+ "nerfstudio"
+]
+
+[project.entry-points.'nerfstudio.method_configs']
+merf_ns = 'merf_ns.merf_ns_config:MeRFNS_method'
