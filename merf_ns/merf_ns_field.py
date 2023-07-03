@@ -106,18 +106,29 @@ class TCNNMeRFNSField(Field):
         spatial_distortion: SpatialDistortion = None,
     ) -> None:
         super().__init__()
+        
+        # MERF 
+        self.grid = Grid(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=512, output_dim=8, num_layers=2, hidden_dim=32)
+        
+        # triplane
+        # if self.opt.use_triplane:
+        self.planeXY = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=8, num_layers=2, hidden_dim=32)
+        self.planeYZ = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=8, num_layers=2, hidden_dim=32)
+        self.planeXZ = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=8, num_layers=2, hidden_dim=32)
 
         self.register_buffer("aabb", aabb)
         self.geo_feat_dim = geo_feat_dim
 
         self.register_buffer("max_res", torch.tensor(max_res))
         self.register_buffer("num_levels", torch.tensor(num_levels))
-        self.register_buffer("log2_hashmap_size", torch.tensor(log2_hashmap_size))
+        self.register_buffer("log2_hashmap_size",
+                             torch.tensor(log2_hashmap_size))
 
         self.spatial_distortion = spatial_distortion
         self.num_images = num_images
         self.appearance_embedding_dim = appearance_embedding_dim
-        self.embedding_appearance = Embedding(self.num_images, self.appearance_embedding_dim)
+        self.embedding_appearance = Embedding(
+            self.num_images, self.appearance_embedding_dim)
         self.use_average_appearance_embedding = use_average_appearance_embedding
         self.use_transient_embedding = use_transient_embedding
         self.use_semantics = use_semantics
@@ -126,7 +137,8 @@ class TCNNMeRFNSField(Field):
 
         base_res: int = 16
         features_per_level: int = 2
-        growth_factor = np.exp((np.log(max_res) - np.log(base_res)) / (num_levels - 1))
+        growth_factor = np.exp(
+            (np.log(max_res) - np.log(base_res)) / (num_levels - 1))
 
         self.direction_encoding = tcnn.Encoding(
             n_input_dims=3,
@@ -164,7 +176,8 @@ class TCNNMeRFNSField(Field):
         # transients
         if self.use_transient_embedding:
             self.transient_embedding_dim = transient_embedding_dim
-            self.embedding_transient = Embedding(self.num_images, self.transient_embedding_dim)
+            self.embedding_transient = Embedding(
+                self.num_images, self.transient_embedding_dim)
             self.mlp_transient = tcnn.Network(
                 n_input_dims=self.geo_feat_dim + self.transient_embedding_dim,
                 n_output_dims=hidden_dim_transient,
@@ -176,9 +189,12 @@ class TCNNMeRFNSField(Field):
                     "n_hidden_layers": num_layers_transient - 1,
                 },
             )
-            self.field_head_transient_uncertainty = UncertaintyFieldHead(in_dim=self.mlp_transient.n_output_dims)
-            self.field_head_transient_rgb = TransientRGBFieldHead(in_dim=self.mlp_transient.n_output_dims)
-            self.field_head_transient_density = TransientDensityFieldHead(in_dim=self.mlp_transient.n_output_dims)
+            self.field_head_transient_uncertainty = UncertaintyFieldHead(
+                in_dim=self.mlp_transient.n_output_dims)
+            self.field_head_transient_rgb = TransientRGBFieldHead(
+                in_dim=self.mlp_transient.n_output_dims)
+            self.field_head_transient_density = TransientDensityFieldHead(
+                in_dim=self.mlp_transient.n_output_dims)
 
         # semantics
         if self.use_semantics:
@@ -210,10 +226,12 @@ class TCNNMeRFNSField(Field):
                     "n_hidden_layers": 2,
                 },
             )
-            self.field_head_pred_normals = PredNormalsFieldHead(in_dim=self.mlp_pred_normals.n_output_dims)
+            self.field_head_pred_normals = PredNormalsFieldHead(
+                in_dim=self.mlp_pred_normals.n_output_dims)
 
         self.mlp_head = tcnn.Network(
-            n_input_dims=self.direction_encoding.n_output_dims + self.geo_feat_dim + self.appearance_embedding_dim,
+            n_input_dims=self.direction_encoding.n_output_dims +
+            self.geo_feat_dim + self.appearance_embedding_dim,
             n_output_dims=3,
             network_config={
                 "otype": "FullyFusedMLP",
@@ -231,7 +249,8 @@ class TCNNMeRFNSField(Field):
             positions = self.spatial_distortion(positions)
             positions = (positions + 2.0) / 4.0
         else:
-            positions = SceneBox.get_normalized_positions(ray_samples.frustums.get_positions(), self.aabb)
+            positions = SceneBox.get_normalized_positions(
+                ray_samples.frustums.get_positions(), self.aabb)
         # Make sure the tcnn gets inputs between 0 and 1.
         selector = ((positions > 0.0) & (positions < 1.0)).all(dim=-1)
         positions = positions * selector[..., None]
@@ -240,7 +259,8 @@ class TCNNMeRFNSField(Field):
             self._sample_locations.requires_grad = True
         positions_flat = positions.view(-1, 3)
         h = self.mlp_base(positions_flat).view(*ray_samples.frustums.shape, -1)
-        density_before_activation, base_mlp_out = torch.split(h, [1, self.geo_feat_dim], dim=-1)
+        density_before_activation, base_mlp_out = torch.split(
+            h, [1, self.geo_feat_dim], dim=-1)
         self._density_before_activation = density_before_activation
 
         # Rectifying the density with an exponential is much more stable than a ReLU or
@@ -270,11 +290,13 @@ class TCNNMeRFNSField(Field):
         else:
             if self.use_average_appearance_embedding:
                 embedded_appearance = torch.ones(
-                    (*directions.shape[:-1], self.appearance_embedding_dim), device=directions.device
+                    (*directions.shape[:-1],
+                     self.appearance_embedding_dim), device=directions.device
                 ) * self.embedding_appearance.mean(dim=0)
             else:
                 embedded_appearance = torch.zeros(
-                    (*directions.shape[:-1], self.appearance_embedding_dim), device=directions.device
+                    (*directions.shape[:-1],
+                     self.appearance_embedding_dim), device=directions.device
                 )
 
         # transients
@@ -287,10 +309,14 @@ class TCNNMeRFNSField(Field):
                 ],
                 dim=-1,
             )
-            x = self.mlp_transient(transient_input).view(*outputs_shape, -1).to(directions)
-            outputs[FieldHeadNames.UNCERTAINTY] = self.field_head_transient_uncertainty(x)
-            outputs[FieldHeadNames.TRANSIENT_RGB] = self.field_head_transient_rgb(x)
-            outputs[FieldHeadNames.TRANSIENT_DENSITY] = self.field_head_transient_density(x)
+            x = self.mlp_transient(transient_input).view(
+                *outputs_shape, -1).to(directions)
+            outputs[FieldHeadNames.UNCERTAINTY] = self.field_head_transient_uncertainty(
+                x)
+            outputs[FieldHeadNames.TRANSIENT_RGB] = self.field_head_transient_rgb(
+                x)
+            outputs[FieldHeadNames.TRANSIENT_DENSITY] = self.field_head_transient_density(
+                x)
 
         # semantics
         if self.use_semantics:
@@ -298,7 +324,8 @@ class TCNNMeRFNSField(Field):
             if not self.pass_semantic_gradients:
                 semantics_input = semantics_input.detach()
 
-            x = self.mlp_semantics(semantics_input).view(*outputs_shape, -1).to(directions)
+            x = self.mlp_semantics(semantics_input).view(
+                *outputs_shape, -1).to(directions)
             outputs[FieldHeadNames.SEMANTICS] = self.field_head_semantics(x)
 
         # predicted normals
@@ -306,10 +333,13 @@ class TCNNMeRFNSField(Field):
             positions = ray_samples.frustums.get_positions()
 
             positions_flat = self.position_encoding(positions.view(-1, 3))
-            pred_normals_inp = torch.cat([positions_flat, density_embedding.view(-1, self.geo_feat_dim)], dim=-1)
+            pred_normals_inp = torch.cat(
+                [positions_flat, density_embedding.view(-1, self.geo_feat_dim)], dim=-1)
 
-            x = self.mlp_pred_normals(pred_normals_inp).view(*outputs_shape, -1).to(directions)
-            outputs[FieldHeadNames.PRED_NORMALS] = self.field_head_pred_normals(x)
+            x = self.mlp_pred_normals(pred_normals_inp).view(
+                *outputs_shape, -1).to(directions)
+            outputs[FieldHeadNames.PRED_NORMALS] = self.field_head_pred_normals(
+                x)
 
         h = torch.cat(
             [
@@ -325,5 +355,150 @@ class TCNNMeRFNSField(Field):
         return outputs
 
 
+class Grid(nn.Module):
+    def __init__(self, level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=512, output_dim=8, num_layers=2, hidden_dim=64, interpolation='linear'):
+        super().__init__()
+        # align corners (index in [0, resolution], resolution + 1 values!)
+        self.resolution = desired_resolution
+        self.encoder = tcnn.Encoding(
+            n_input_dims=3,
+            encoding_config={
+                "otype": "HashGrid",
+                "n_levels": num_levels,
+                "n_features_per_level": level_dim,
+                "log2_hashmap_size": log2_hashmap_size,
+                "base_resolution": 16,
+                "per_level_scale": 2
+            },
+        )
+        # self.encoder, self.in_dim = get_encoder("hashgrid", input_dim=3, level_dim=level_dim, num_levels=num_levels, log2_hashmap_size=log2_hashmap_size, desired_resolution=desired_resolution + 1, interpolation=interpolation)
+        # self.mlp = MLP(self.in_dim, output_dim,
+        #                hidden_dim, num_layers, bias=False)
+        self.mlp = tcnn.Network(
+            self.encoder.n_output_dims,
+            output_dim,
+            {
+                "otype": "FullyFusedMLP",
+                "activation": "ReLU",
+                "output_activation": "None",
+                "n_neurons": hidden_dim,
+                "n_hidden_layers": num_layers
+            }
+        )
 
-field_implementation_to_class: Dict[str, Field] = {"tcnn":TCNNMeRFNSField}
+    def forward(self, xyz, bound):
+        # manually perform the interpolation after any nonlinear MLP...
+        # this resembles align_corners = True
+
+        xyz = (xyz + bound) / (2 * bound)  # [0, 1]
+        coords = xyz * self.resolution  # [0, resolution]
+        # float coord
+        cx, cy, cz = coords[..., 0], coords[..., 1], coords[..., 2]
+        # int coord
+        cx0, cy0, cz0 = cx.floor().clamp(0, self.resolution - 1).long(), cy.floor().clamp(0,
+                                                                                          self.resolution - 1).long(), cz.floor().clamp(0, self.resolution - 1).long()
+        cx1, cy1, cz1 = cx0 + 1, cy0 + 1, cz0 + 1
+        # interp weights
+        u, v, w = (cx - cx0).unsqueeze(-1), (cy -
+                                             cy0).unsqueeze(-1), (cz - cz0).unsqueeze(-1)  # [N, 1] in [0, 1]
+        # interp positions
+        f000 = self.mlp(self.encoder(torch.stack(
+            [cx0, cy0, cz0], dim=-1).float() / self.resolution))
+        f001 = self.mlp(self.encoder(torch.stack(
+            [cx0, cy0, cz1], dim=-1).float() / self.resolution))
+        f010 = self.mlp(self.encoder(torch.stack(
+            [cx0, cy1, cz0], dim=-1).float() / self.resolution))
+        f011 = self.mlp(self.encoder(torch.stack(
+            [cx0, cy1, cz1], dim=-1).float() / self.resolution))
+        f100 = self.mlp(self.encoder(torch.stack(
+            [cx1, cy0, cz0], dim=-1).float() / self.resolution))
+        f101 = self.mlp(self.encoder(torch.stack(
+            [cx1, cy0, cz1], dim=-1).float() / self.resolution))
+        f110 = self.mlp(self.encoder(torch.stack(
+            [cx1, cy1, cz0], dim=-1).float() / self.resolution))
+        f111 = self.mlp(self.encoder(torch.stack(
+            [cx1, cy1, cz1], dim=-1).float() / self.resolution))
+        # interp
+        f = (1 - w) * (1 - v) * (1 - u) * f000 + \
+            (1 - w) * (1 - v) * u * f100 + \
+            (1 - w) * v * (1 - u) * f010 + \
+            (1 - w) * v * u * f110 + \
+            w * (1 - v) * (1 - u) * f001 + \
+            w * (1 - v) * u * f101 + \
+            w * v * (1 - u) * f011 + \
+            w * v * u * f111
+        return f
+
+    def grad_total_variation(self, lambda_tv):
+        self.encoder.grad_total_variation(lambda_tv)
+
+
+class Plane(nn.Module):
+    def __init__(self, level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=8, num_layers=2, hidden_dim=64, interpolation='linear'):
+        super().__init__()
+        # align corners (index in [0, resolution], resolution + 1 values!)
+        self.resolution = desired_resolution
+        self.encoder = tcnn.Encoding(
+            n_input_dims=3,
+            encoding_config={
+                "otype": "HashGrid",
+                "n_levels": num_levels,
+                "n_features_per_level": level_dim,
+                "log2_hashmap_size": log2_hashmap_size,
+                "base_resolution": 16,
+                "per_level_scale": 2
+            },
+        )
+        # self.encoder, self.in_dim = get_encoder("hashgrid", input_dim=2, level_dim=level_dim, num_levels=num_levels,
+        #                                         log2_hashmap_size=log2_hashmap_size, desired_resolution=desired_resolution, interpolation=interpolation)
+        # self.mlp = MLP(self.in_dim, output_dim,
+        #                hidden_dim, num_layers, bias=False)
+        self.mlp = tcnn.Network(
+            self.encoder.n_output_dims,
+            output_dim,
+            {
+                "otype": "FullyFusedMLP",
+                "activation": "ReLU",
+                "output_activation": "None",
+                "n_neurons": hidden_dim,
+                "n_hidden_layers": num_layers
+            }
+        )
+
+    def forward(self, xy, bound):
+        # manually perform the interpolation after any nonlinear MLP...
+        # this resembles align_corners = False
+
+        xy = (xy + bound) / (2 * bound)  # [0, 1]
+        coords = xy * self.resolution - 0.5  # [-0.5, resolution-0.5]
+        coords = coords.clamp(0, self.resolution - 1)  # [0, resolution-1]
+        # float coord
+        cx, cy = coords[..., 0], coords[..., 1]
+        # int coord
+        cx0, cy0 = cx.floor().long(), cy.floor().long()
+        cx1, cy1 = (cx0 + 1).clamp(0, self.resolution -
+                                   1), (cy0 + 1).clamp(0, self.resolution - 1)
+        # interp weights
+        u, v = (cx - cx0).unsqueeze(-1), (cy -
+                                          cy0).unsqueeze(-1)  # [N, 1] in [0, 1]
+        # interp positions
+        f00 = self.mlp(self.encoder(
+            (torch.stack([cx0, cy0], dim=-1).float() + 0.5) / self.resolution))
+        f01 = self.mlp(self.encoder(
+            (torch.stack([cx0, cy1], dim=-1).float() + 0.5) / self.resolution))
+        f10 = self.mlp(self.encoder(
+            (torch.stack([cx1, cy0], dim=-1).float() + 0.5) / self.resolution))
+        f11 = self.mlp(self.encoder(
+            (torch.stack([cx1, cy1], dim=-1).float() + 0.5) / self.resolution))
+        # interp
+        f = (1 - v) * (1 - u) * f00 + \
+            (1 - v) * u * f10 + \
+            v * (1 - u) * f01 + \
+            v * u * f11
+        return f
+
+    def grad_total_variation(self, lambda_tv):
+        self.encoder.grad_total_variation(lambda_tv)
+
+
+field_implementation_to_class: Dict[str, Field] = {"tcnn": TCNNMeRFNSField}
