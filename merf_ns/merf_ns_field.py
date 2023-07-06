@@ -324,6 +324,8 @@ class TCNNMeRFNSField(Field):
                 normals = self.get_normals()
             field_outputs[FieldHeadNames.NORMALS] = normals  # type: ignore
         return field_outputs
+    
+    # TODO 这个地方import 一下ｕｔｉｌｉｓ里面的ＭｅＲＦＮＳＦｉｅｌｄＮａｍｅ然后输出一下ＳＨ的参数？
     def get_outputs(
         self, ray_samples: RaySamples, density_embedding: Optional[TensorType] = None
     ) -> Dict[FieldHeadNames, TensorType]:
@@ -337,7 +339,7 @@ class TCNNMeRFNSField(Field):
         d = self.direction_encoding(directions_flat)
 
         outputs_shape = ray_samples.frustums.directions.shape[:-1]
-        # TODO 这个地方的输入可以当作一个新的FieldHead
+        # 
         # appearance
         # if self.training:
         #     embedded_appearance = self.embedding_appearance(camera_indices)
