@@ -107,7 +107,7 @@ class TCNNMeRFNSField(Field):
     ) -> None:
         super().__init__()
         
-        # MERF 
+        # ******MERF****** 
         self.grid = Grid(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=512, output_dim=8, num_layers=2, hidden_dim=32)
         
         # triplane
@@ -115,7 +115,7 @@ class TCNNMeRFNSField(Field):
         self.planeXY = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=8, num_layers=2, hidden_dim=32)
         self.planeYZ = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=8, num_layers=2, hidden_dim=32)
         self.planeXZ = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=8, num_layers=2, hidden_dim=32)
-
+        # ******MERF****** 
         self.register_buffer("aabb", aabb)
         self.geo_feat_dim = geo_feat_dim
 
@@ -269,7 +269,77 @@ class TCNNMeRFNSField(Field):
         density = trunc_exp(density_before_activation.to(positions))
         density = density * selector[..., None]
         return density, base_mlp_out
+    def common_forward(self, x):
+        
+        f = 0
+        if self.opt.use_grid:
+            f_grid = self.quantize_feature(self.grid(x, self.bound))
+            f = f + f_grid
+        if self.opt.use_triplane:
+            f_plane_01 = self.quantize_feature(self.planeXY(x[..., [0, 1]], self.bound))
+            f_plane_12 = self.quantize_feature(self.planeYZ(x[..., [1, 2]], self.bound))
+            f_plane_02 = self.quantize_feature(self.planeXZ(x[..., [0, 2]], self.bound))
+            f = f + f_plane_01 + f_plane_12 + f_plane_02
+        
+        f_sigma = f[..., 0]
+        f_diffuse = f[..., 1:4]
+        f_specular = f[..., 4:]
 
+        return f_sigma, f_diffuse, f_specular
+    
+    def quantize_feature(self, f, baking=False):
+        f[..., 0] = self.quantize(f[..., 0], 14, baking)
+        f[..., 1:] = self.quantize(f[..., 1:], 7, baking)
+        return f
+    
+    def quantize(self, x, m=7, baking=False):
+        # x: in real value, to be quantized in to [-m, m]
+        x = torch.sigmoid(x)
+
+        if baking: return torch.floor(255 * x + 0.5)
+        
+        x = x + (torch.floor(255 * x + 0.5) / 255 - x).detach()
+        x = 2 * m * x - m
+        return x
+    def common_forward(self, x):
+        
+        f = 0
+        if self.opt.use_grid:
+            f_grid = self.quantize_feature(self.grid(x, self.bound))
+            f = f + f_grid
+        if self.opt.use_triplane:
+            f_plane_01 = self.quantize_feature(self.planeXY(x[..., [0, 1]], self.bound))
+            f_plane_12 = self.quantize_feature(self.planeYZ(x[..., [1, 2]], self.bound))
+            f_plane_02 = self.quantize_feature(self.planeXZ(x[..., [0, 2]], self.bound))
+            f = f + f_plane_01 + f_plane_12 + f_plane_02
+        
+        f_sigma = f[..., 0]
+        f_diffuse = f[..., 1:4]
+        f_specular = f[..., 4:]
+
+        return f_sigma, f_diffuse, f_specular
+    #　这个地方重载了Field里的forward函数
+    # TODO 重载forward 函数
+    def forward(self, ray_samples: RaySamples, compute_normals: bool = False) -> Dict[FieldHeadNames, Tensor]:
+        """Evaluates the field at points along the ray.
+
+        Args:
+            ray_samples: Samples to evaluate field on.
+        """
+        if compute_normals:
+            with torch.enable_grad():
+                density, density_embedding = self.get_density(ray_samples)
+        else:
+            density, density_embedding = self.get_density(ray_samples)
+
+        field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding)
+        field_outputs[FieldHeadNames.DENSITY] = density  # type: ignore
+
+        if compute_normals:
+            with torch.enable_grad():
+                normals = self.get_normals()
+            field_outputs[FieldHeadNames.NORMALS] = normals  # type: ignore
+        return field_outputs
     def get_outputs(
         self, ray_samples: RaySamples, density_embedding: Optional[TensorType] = None
     ) -> Dict[FieldHeadNames, TensorType]:
@@ -283,7 +353,7 @@ class TCNNMeRFNSField(Field):
         d = self.direction_encoding(directions_flat)
 
         outputs_shape = ray_samples.frustums.directions.shape[:-1]
-
+        # TODO 这个地方的输入可以当作一个新的FieldHead
         # appearance
         if self.training:
             embedded_appearance = self.embedding_appearance(camera_indices)

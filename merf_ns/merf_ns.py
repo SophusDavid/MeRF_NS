@@ -132,7 +132,8 @@ class MeRFNSModel(NerfactoModel):
             ray_bundle = self.collider(ray_bundle)
 
         return self.get_outputs(ray_bundle)
-
+    # TODO 这里调用了filed里的getoutput，原本是调用基类的get_output，然后这里我们需要重载一些filed的get_output,然后在这个函数里面
+    # 计算merf相关的量？
     def get_outputs(self, ray_bundle: RayBundle):
         # print(step)
         ray_samples, weights_list, ray_samples_list = self.proposal_sampler(
