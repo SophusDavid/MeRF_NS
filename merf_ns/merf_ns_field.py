@@ -269,23 +269,7 @@ class TCNNMeRFNSField(Field):
         density = trunc_exp(density_before_activation.to(positions))
         density = density * selector[..., None]
         return density, base_mlp_out
-    def common_forward(self, x):
-        
-        f = 0
-        if self.opt.use_grid:
-            f_grid = self.quantize_feature(self.grid(x, self.bound))
-            f = f + f_grid
-        if self.opt.use_triplane:
-            f_plane_01 = self.quantize_feature(self.planeXY(x[..., [0, 1]], self.bound))
-            f_plane_12 = self.quantize_feature(self.planeYZ(x[..., [1, 2]], self.bound))
-            f_plane_02 = self.quantize_feature(self.planeXZ(x[..., [0, 2]], self.bound))
-            f = f + f_plane_01 + f_plane_12 + f_plane_02
-        
-        f_sigma = f[..., 0]
-        f_diffuse = f[..., 1:4]
-        f_specular = f[..., 4:]
 
-        return f_sigma, f_diffuse, f_specular
     
     def quantize_feature(self, f, baking=False):
         f[..., 0] = self.quantize(f[..., 0], 14, baking)
@@ -355,67 +339,67 @@ class TCNNMeRFNSField(Field):
         outputs_shape = ray_samples.frustums.directions.shape[:-1]
         # TODO 这个地方的输入可以当作一个新的FieldHead
         # appearance
-        if self.training:
-            embedded_appearance = self.embedding_appearance(camera_indices)
-        else:
-            if self.use_average_appearance_embedding:
-                embedded_appearance = torch.ones(
-                    (*directions.shape[:-1],
-                     self.appearance_embedding_dim), device=directions.device
-                ) * self.embedding_appearance.mean(dim=0)
-            else:
-                embedded_appearance = torch.zeros(
-                    (*directions.shape[:-1],
-                     self.appearance_embedding_dim), device=directions.device
-                )
+        # if self.training:
+        #     embedded_appearance = self.embedding_appearance(camera_indices)
+        # else:
+        #     if self.use_average_appearance_embedding:
+        #         embedded_appearance = torch.ones(
+        #             (*directions.shape[:-1],
+        #              self.appearance_embedding_dim), device=directions.device
+        #         ) * self.embedding_appearance.mean(dim=0)
+        #     else:
+        #         embedded_appearance = torch.zeros(
+        #             (*directions.shape[:-1],
+        #              self.appearance_embedding_dim), device=directions.device
+        #         )
 
         # transients
-        if self.use_transient_embedding and self.training:
-            embedded_transient = self.embedding_transient(camera_indices)
-            transient_input = torch.cat(
-                [
-                    density_embedding.view(-1, self.geo_feat_dim),
-                    embedded_transient.view(-1, self.transient_embedding_dim),
-                ],
-                dim=-1,
-            )
-            x = self.mlp_transient(transient_input).view(
-                *outputs_shape, -1).to(directions)
-            outputs[FieldHeadNames.UNCERTAINTY] = self.field_head_transient_uncertainty(
-                x)
-            outputs[FieldHeadNames.TRANSIENT_RGB] = self.field_head_transient_rgb(
-                x)
-            outputs[FieldHeadNames.TRANSIENT_DENSITY] = self.field_head_transient_density(
-                x)
+        # if self.use_transient_embedding and self.training:
+        #     embedded_transient = self.embedding_transient(camera_indices)
+        #     transient_input = torch.cat(
+        #         [
+        #             density_embedding.view(-1, self.geo_feat_dim),
+        #             embedded_transient.view(-1, self.transient_embedding_dim),
+        #         ],
+        #         dim=-1,
+        #     )
+        #     x = self.mlp_transient(transient_input).view(
+        #         *outputs_shape, -1).to(directions)
+        #     outputs[FieldHeadNames.UNCERTAINTY] = self.field_head_transient_uncertainty(
+        #         x)
+        #     outputs[FieldHeadNames.TRANSIENT_RGB] = self.field_head_transient_rgb(
+        #         x)
+        #     outputs[FieldHeadNames.TRANSIENT_DENSITY] = self.field_head_transient_density(
+        #         x)
 
         # semantics
-        if self.use_semantics:
-            semantics_input = density_embedding.view(-1, self.geo_feat_dim)
-            if not self.pass_semantic_gradients:
-                semantics_input = semantics_input.detach()
+        # if self.use_semantics:
+        #     semantics_input = density_embedding.view(-1, self.geo_feat_dim)
+        #     if not self.pass_semantic_gradients:
+        #         semantics_input = semantics_input.detach()
 
-            x = self.mlp_semantics(semantics_input).view(
-                *outputs_shape, -1).to(directions)
-            outputs[FieldHeadNames.SEMANTICS] = self.field_head_semantics(x)
+        #     x = self.mlp_semantics(semantics_input).view(
+        #         *outputs_shape, -1).to(directions)
+        #     outputs[FieldHeadNames.SEMANTICS] = self.field_head_semantics(x)
 
         # predicted normals
-        if self.use_pred_normals:
-            positions = ray_samples.frustums.get_positions()
+        # if self.use_pred_normals:
+        #     positions = ray_samples.frustums.get_positions()
 
-            positions_flat = self.position_encoding(positions.view(-1, 3))
-            pred_normals_inp = torch.cat(
-                [positions_flat, density_embedding.view(-1, self.geo_feat_dim)], dim=-1)
+        #     positions_flat = self.position_encoding(positions.view(-1, 3))
+        #     pred_normals_inp = torch.cat(
+        #         [positions_flat, density_embedding.view(-1, self.geo_feat_dim)], dim=-1)
 
-            x = self.mlp_pred_normals(pred_normals_inp).view(
-                *outputs_shape, -1).to(directions)
-            outputs[FieldHeadNames.PRED_NORMALS] = self.field_head_pred_normals(
-                x)
+        #     x = self.mlp_pred_normals(pred_normals_inp).view(
+        #         *outputs_shape, -1).to(directions)
+        #     outputs[FieldHeadNames.PRED_NORMALS] = self.field_head_pred_normals(
+        #         x)
 
         h = torch.cat(
             [
                 d,
                 density_embedding.view(-1, self.geo_feat_dim),
-                embedded_appearance.view(-1, self.appearance_embedding_dim),
+                # embedded_appearance.view(-1, self.appearance_embedding_dim),
             ],
             dim=-1,
         )

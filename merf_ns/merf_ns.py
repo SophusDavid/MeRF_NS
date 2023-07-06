@@ -5,12 +5,9 @@ from typing import Dict, List, Tuple, Type
 
 import numpy as np
 import torch
-from nerfstudio.cameras.rays import RayBundle, RaySamples
-from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.field_components.spatial_distortions import SceneContraction
-from nerfstudio.model_components.ray_samplers import PDFSampler
-from nerfstudio.model_components.renderers import DepthRenderer
+
 from torch.nn import Parameter
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Type
@@ -18,9 +15,6 @@ from typing import Dict, List, Tuple, Type
 import numpy as np
 import torch
 from torch.nn import Parameter
-from torchmetrics import PeakSignalNoiseRatio
-from torchmetrics.functional import structural_similarity_index_measure
-from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from typing_extensions import Literal
 
 from nerfstudio.cameras.rays import RayBundle
@@ -29,10 +23,8 @@ from nerfstudio.engine.callbacks import (
     TrainingCallbackAttributes,
     TrainingCallbackLocation,
 )
-from nerfstudio.field_components.field_heads import FieldHeadNames
+# from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.field_components.spatial_distortions import SceneContraction
-from nerfstudio.fields.density_fields import HashMLPDensityField
-from nerfstudio.fields.nerfacto_field import TCNNNerfactoField, TorchNerfactoField
 from nerfstudio.model_components.losses import (
     MSELoss,
     distortion_loss,
@@ -40,29 +32,45 @@ from nerfstudio.model_components.losses import (
     orientation_loss,
     pred_normal_loss,
 )
-from nerfstudio.model_components.ray_samplers import (
-    ProposalNetworkSampler,
-    UniformSampler,
-)
-from nerfstudio.model_components.renderers import (
-    AccumulationRenderer,
-    DepthRenderer,
-    NormalsRenderer,
-    RGBRenderer,
-)
-from nerfstudio.model_components.scene_colliders import NearFarCollider
-from nerfstudio.model_components.shaders import NormalsShader
-from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import colormaps
-
+from nerfstudio.model_components.renderers import SHRenderer, RGBRenderer
 from merf_ns.merf_ns_field import TCNNMeRFNSField
-
+from jaxtyping import Float
+from torch import Tensor, nn
+import math
+from nerfstudio.utils.math import components_from_spherical_harmonics, safe_normalize
 
 @dataclass
 class MeRFNSConfig(NerfactoModelConfig):
     _target: Type = field(default_factory=lambda: MeRFNSModel)
+from utils import MeRFNSFieldHeadNames
 
+class MeRFNSRenderer(SHRenderer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # self.renderer_rgb = RGBRenderer()
 
+    def forward(self,
+                sh: Float[Tensor, "*batch num_samples coeffs"],
+                diffuse: Float[Tensor, "*batch num_samples 3"], 
+                directions: Float[Tensor, "*batch num_samples 3"],
+                weights: Float[Tensor, "*batch num_samples 1"],
+                ) -> Float[Tensor, "*batch 3"]:
+        sh = sh.view(*sh.shape[:-1], 3, sh.shape[-1] // 3)
+        levels = int(math.sqrt(sh.shape[-1]))
+        components = components_from_spherical_harmonics(levels=levels, directions=directions)
+
+        rgb = sh * components[..., None, :]
+        rgb = torch.sum(rgb, dim=-1)  # [..., num_samples, 3]
+        if self.activation is not None:
+            rgb = self.activation(rgb)
+        if not self.training:
+            rgb = torch.nan_to_num(rgb)
+        rgb=rgb+diffuse
+        rgb = RGBRenderer.combine_rgb(rgb, weights, background_color=self.background_color)
+        if not self.training:
+            torch.clamp_(rgb, min=0.0, max=1.0)
+        return rgb
 class MeRFNSModel(NerfactoModel):
     config: MeRFNSConfig
 
@@ -75,6 +83,7 @@ class MeRFNSModel(NerfactoModel):
         self.field = TCNNMeRFNSField(
             self.scene_box.aabb, spatial_distortion=scene_contraction, num_images=self.num_train_data
         )
+        self.renderer_rgb = MeRFNSRenderer()
         pass
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
@@ -134,6 +143,7 @@ class MeRFNSModel(NerfactoModel):
         return self.get_outputs(ray_bundle)
     # TODO 这里调用了filed里的getoutput，原本是调用基类的get_output，然后这里我们需要重载一些filed的get_output,然后在这个函数里面
     # 计算merf相关的量？
+
     def get_outputs(self, ray_bundle: RayBundle):
         # print(step)
         ray_samples, weights_list, ray_samples_list = self.proposal_sampler(
@@ -141,12 +151,15 @@ class MeRFNSModel(NerfactoModel):
         field_outputs = self.field(
             ray_samples, compute_normals=self.config.predict_normals)
         weights = ray_samples.get_weights(
-            field_outputs[FieldHeadNames.DENSITY])
+            field_outputs[MeRFNSFieldHeadNames.DENSITY])
         weights_list.append(weights)
         ray_samples_list.append(ray_samples)
-
-        rgb = self.renderer_rgb(
-            rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
+        # 原始的ＲＢＧ计算方式不适用于我们的代码
+        # rgb = self.renderer_rgb(
+        #     rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
+        sh=field_outputs[MeRFNSFieldHeadNames.SH]
+        diffuse=field_outputs[MeRFNSFieldHeadNames.DIFFUSE]
+        rgb=self.renderer_rgb(sh,diffuse,ray_bundle.directions,weights)
         depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
         accumulation = self.renderer_accumulation(weights=weights)
 
@@ -158,9 +171,9 @@ class MeRFNSModel(NerfactoModel):
 
         if self.config.predict_normals:
             normals = self.renderer_normals(
-                normals=field_outputs[FieldHeadNames.NORMALS], weights=weights)
+                normals=field_outputs[MeRFNSFieldHeadNames.NORMALS], weights=weights)
             pred_normals = self.renderer_normals(
-                field_outputs[FieldHeadNames.PRED_NORMALS], weights=weights)
+                field_outputs[MeRFNSFieldHeadNames.PRED_NORMALS], weights=weights)
             outputs["normals"] = self.normals_shader(normals)
             outputs["pred_normals"] = self.normals_shader(pred_normals)
         # These use a lot of GPU memory, so we avoid storing them for eval.
@@ -171,13 +184,13 @@ class MeRFNSModel(NerfactoModel):
         if self.training and self.config.predict_normals:
             outputs["rendered_orientation_loss"] = orientation_loss(
                 weights.detach(
-                ), field_outputs[FieldHeadNames.NORMALS], ray_bundle.directions
+                ), field_outputs[MeRFNSFieldHeadNames.NORMALS], ray_bundle.directions
             )
 
             outputs["rendered_pred_normal_loss"] = pred_normal_loss(
                 weights.detach(),
-                field_outputs[FieldHeadNames.NORMALS].detach(),
-                field_outputs[FieldHeadNames.PRED_NORMALS],
+                field_outputs[MeRFNSFieldHeadNames.NORMALS].detach(),
+                field_outputs[MeRFNSFieldHeadNames.PRED_NORMALS],
             )
 
         for i in range(self.config.num_proposal_iterations):
