@@ -47,7 +47,7 @@ from nerfstudio.field_components.spatial_distortions import (
     SpatialDistortion,
 )
 from nerfstudio.fields.base_field import Field, shift_directions_for_tcnn
-
+from utils import MeRFNSFieldHeadNames
 try:
     import tinycudann as tcnn
 except ImportError:
@@ -115,6 +115,25 @@ class TCNNMeRFNSField(Field):
         self.planeXY = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=8, num_layers=2, hidden_dim=32)
         self.planeYZ = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=8, num_layers=2, hidden_dim=32)
         self.planeXZ = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=8, num_layers=2, hidden_dim=32)
+        self.view_encoder, self.view_in_dim = tcnn.Encoding(
+            n_input_dims=3,
+            encoding_config={
+                "otype": "Frequency",
+                "n_frequencies": 4,
+            },
+        )
+
+        self.view_mlp=tcnn.Network(
+           3 + 4 + self.view_in_dim ,
+             3,
+            {
+                "otype": "FullyFusedMLP",
+                "activation": "ReLU",
+                "output_activation": "None",
+                "n_neurons":  16,
+                "n_hidden_layers": 3
+            }
+        )
         # ******MERF****** 
         self.register_buffer("aabb", aabb)
         self.geo_feat_dim = geo_feat_dim
@@ -135,113 +154,7 @@ class TCNNMeRFNSField(Field):
         self.use_pred_normals = use_pred_normals
         self.pass_semantic_gradients = pass_semantic_gradients
 
-        base_res: int = 16
-        features_per_level: int = 2
-        growth_factor = np.exp(
-            (np.log(max_res) - np.log(base_res)) / (num_levels - 1))
-
-        self.direction_encoding = tcnn.Encoding(
-            n_input_dims=3,
-            encoding_config={
-                "otype": "SphericalHarmonics",
-                "degree": 4,
-            },
-        )
-
-        self.position_encoding = tcnn.Encoding(
-            n_input_dims=3,
-            encoding_config={"otype": "Frequency", "n_frequencies": 2},
-        )
-
-        self.mlp_base = tcnn.NetworkWithInputEncoding(
-            n_input_dims=3,
-            n_output_dims=1 + self.geo_feat_dim,
-            encoding_config={
-                "otype": "HashGrid",
-                "n_levels": num_levels,
-                "n_features_per_level": features_per_level,
-                "log2_hashmap_size": log2_hashmap_size,
-                "base_resolution": base_res,
-                "per_level_scale": growth_factor,
-            },
-            network_config={
-                "otype": "FullyFusedMLP",
-                "activation": "ReLU",
-                "output_activation": "None",
-                "n_neurons": hidden_dim,
-                "n_hidden_layers": num_layers - 1,
-            },
-        )
-
-        # transients
-        if self.use_transient_embedding:
-            self.transient_embedding_dim = transient_embedding_dim
-            self.embedding_transient = Embedding(
-                self.num_images, self.transient_embedding_dim)
-            self.mlp_transient = tcnn.Network(
-                n_input_dims=self.geo_feat_dim + self.transient_embedding_dim,
-                n_output_dims=hidden_dim_transient,
-                network_config={
-                    "otype": "FullyFusedMLP",
-                    "activation": "ReLU",
-                    "output_activation": "None",
-                    "n_neurons": hidden_dim_transient,
-                    "n_hidden_layers": num_layers_transient - 1,
-                },
-            )
-            self.field_head_transient_uncertainty = UncertaintyFieldHead(
-                in_dim=self.mlp_transient.n_output_dims)
-            self.field_head_transient_rgb = TransientRGBFieldHead(
-                in_dim=self.mlp_transient.n_output_dims)
-            self.field_head_transient_density = TransientDensityFieldHead(
-                in_dim=self.mlp_transient.n_output_dims)
-
-        # semantics
-        if self.use_semantics:
-            self.mlp_semantics = tcnn.Network(
-                n_input_dims=self.geo_feat_dim,
-                n_output_dims=hidden_dim_transient,
-                network_config={
-                    "otype": "FullyFusedMLP",
-                    "activation": "ReLU",
-                    "output_activation": "None",
-                    "n_neurons": 64,
-                    "n_hidden_layers": 1,
-                },
-            )
-            self.field_head_semantics = SemanticFieldHead(
-                in_dim=self.mlp_semantics.n_output_dims, num_classes=num_semantic_classes
-            )
-
-        # predicted normals
-        if self.use_pred_normals:
-            self.mlp_pred_normals = tcnn.Network(
-                n_input_dims=self.geo_feat_dim + self.position_encoding.n_output_dims,
-                n_output_dims=hidden_dim_transient,
-                network_config={
-                    "otype": "FullyFusedMLP",
-                    "activation": "ReLU",
-                    "output_activation": "None",
-                    "n_neurons": 64,
-                    "n_hidden_layers": 2,
-                },
-            )
-            self.field_head_pred_normals = PredNormalsFieldHead(
-                in_dim=self.mlp_pred_normals.n_output_dims)
-
-        self.mlp_head = tcnn.Network(
-            n_input_dims=self.direction_encoding.n_output_dims +
-            self.geo_feat_dim + self.appearance_embedding_dim,
-            n_output_dims=3,
-            network_config={
-                "otype": "FullyFusedMLP",
-                "activation": "ReLU",
-                "output_activation": "Sigmoid",
-                "n_neurons": hidden_dim_color,
-                "n_hidden_layers": num_layers_color - 1,
-            },
-        )
-
+    
     def get_density(self, ray_samples: RaySamples) -> Tuple[TensorType, TensorType]:
         """Computes and returns the densities."""
         if self.spatial_distortion is not None:
@@ -250,7 +163,7 @@ class TCNNMeRFNSField(Field):
             positions = (positions + 2.0) / 4.0
         else:
             positions = SceneBox.get_normalized_positions(
-                ray_samples.frustums.get_positions(), self.aabb)
+                ray_samples.frustums.get_positions(), self.aabb)  
         # Make sure the tcnn gets inputs between 0 and 1.
         selector = ((positions > 0.0) & (positions < 1.0)).all(dim=-1)
         positions = positions * selector[..., None]
@@ -258,17 +171,19 @@ class TCNNMeRFNSField(Field):
         if not self._sample_locations.requires_grad:
             self._sample_locations.requires_grad = True
         positions_flat = positions.view(-1, 3)
-        h = self.mlp_base(positions_flat).view(*ray_samples.frustums.shape, -1)
-        density_before_activation, base_mlp_out = torch.split(
-            h, [1, self.geo_feat_dim], dim=-1)
-        self._density_before_activation = density_before_activation
+        f_sigma, f_diffuse, f_specular=self.common_forward(positions_flat)
+        # sigma = trunc_exp(f_sigma - 1)
+        # h = self.mlp_base(positions_flat).view(*ray_samples.frustums.shape, -1)
+        # density_before_activation, base_mlp_out = torch.split(
+        #     h, [1, self.geo_feat_dim], dim=-1)
+        self._density_before_activation = f_sigma
 
         # Rectifying the density with an exponential is much more stable than a ReLU or
         # softplus, because it enables high post-activation (float32) density outputs
         # from smaller internal (float16) parameters.
-        density = trunc_exp(density_before_activation.to(positions))
+        density = trunc_exp(f_sigma.to(positions))
         density = density * selector[..., None]
-        return density, base_mlp_out
+        return density
 
     
     def quantize_feature(self, f, baking=False):
@@ -312,102 +227,51 @@ class TCNNMeRFNSField(Field):
         """
         if compute_normals:
             with torch.enable_grad():
-                density, density_embedding = self.get_density(ray_samples)
+                density = self.get_density(ray_samples)
         else:
-            density, density_embedding = self.get_density(ray_samples)
+            density = self.get_density(ray_samples)
 
-        field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding)
+        field_outputs = self.get_outputs(ray_samples)
         field_outputs[FieldHeadNames.DENSITY] = density  # type: ignore
 
-        if compute_normals:
-            with torch.enable_grad():
-                normals = self.get_normals()
-            field_outputs[FieldHeadNames.NORMALS] = normals  # type: ignore
+        # if compute_normals:
+        #     with torch.enable_grad():
+        #         normals = self.get_normals()
+        #     field_outputs[FieldHeadNames.NORMALS] = normals  # type: ignore
         return field_outputs
     
-    # TODO 这个地方import 一下ｕｔｉｌｉｓ里面的ＭｅＲＦＮＳＦｉｅｌｄＮａｍｅ然后输出一下ＳＨ的参数？
+    # TODO 这个地方import utilis里面的ＭｅＲＦＮＳＦｉｅｌｄＮａｍｅ然后输出一下ＳＨ的参数？
     def get_outputs(
-        self, ray_samples: RaySamples, density_embedding: Optional[TensorType] = None
+        self, ray_samples: RaySamples
     ) -> Dict[FieldHeadNames, TensorType]:
-        assert density_embedding is not None
+        # 这部分代码是nerf-w做apperance embedding的
+        # assert density_embedding is not None
         outputs = {}
-        if ray_samples.camera_indices is None:
-            raise AttributeError("Camera indices are not provided.")
-        camera_indices = ray_samples.camera_indices.squeeze()
+        # if ray_samples.camera_indices is None:
+        #     raise AttributeError("Camera indices are not provided.")
+        # camera_indices = ray_samples.camera_indices.squeeze()
+        if self.spatial_distortion is not None:
+            positions = ray_samples.frustums.get_positions()
+            positions = self.spatial_distortion(positions)
+            positions = (positions + 2.0) / 4.0
+        else:
+            positions = SceneBox.get_normalized_positions(
+                ray_samples.frustums.get_positions(), self.aabb)  
+        # Make sure the tcnn gets inputs between 0 and 1.
+        selector = ((positions > 0.0) & (positions < 1.0)).all(dim=-1)
+        positions = positions * selector[..., None]
+        f_sigma, f_diffuse, f_specular = self.common_forward(positions)
+        sigma = trunc_exp(f_sigma - 1)
         directions = shift_directions_for_tcnn(ray_samples.frustums.directions)
         directions_flat = directions.view(-1, 3)
-        d = self.direction_encoding(directions_flat)
-
-        outputs_shape = ray_samples.frustums.directions.shape[:-1]
-        # 
-        # appearance
-        # if self.training:
-        #     embedded_appearance = self.embedding_appearance(camera_indices)
-        # else:
-        #     if self.use_average_appearance_embedding:
-        #         embedded_appearance = torch.ones(
-        #             (*directions.shape[:-1],
-        #              self.appearance_embedding_dim), device=directions.device
-        #         ) * self.embedding_appearance.mean(dim=0)
-        #     else:
-        #         embedded_appearance = torch.zeros(
-        #             (*directions.shape[:-1],
-        #              self.appearance_embedding_dim), device=directions.device
-        #         )
-
-        # transients
-        # if self.use_transient_embedding and self.training:
-        #     embedded_transient = self.embedding_transient(camera_indices)
-        #     transient_input = torch.cat(
-        #         [
-        #             density_embedding.view(-1, self.geo_feat_dim),
-        #             embedded_transient.view(-1, self.transient_embedding_dim),
-        #         ],
-        #         dim=-1,
-        #     )
-        #     x = self.mlp_transient(transient_input).view(
-        #         *outputs_shape, -1).to(directions)
-        #     outputs[FieldHeadNames.UNCERTAINTY] = self.field_head_transient_uncertainty(
-        #         x)
-        #     outputs[FieldHeadNames.TRANSIENT_RGB] = self.field_head_transient_rgb(
-        #         x)
-        #     outputs[FieldHeadNames.TRANSIENT_DENSITY] = self.field_head_transient_density(
-        #         x)
-
-        # semantics
-        # if self.use_semantics:
-        #     semantics_input = density_embedding.view(-1, self.geo_feat_dim)
-        #     if not self.pass_semantic_gradients:
-        #         semantics_input = semantics_input.detach()
-
-        #     x = self.mlp_semantics(semantics_input).view(
-        #         *outputs_shape, -1).to(directions)
-        #     outputs[FieldHeadNames.SEMANTICS] = self.field_head_semantics(x)
-
-        # predicted normals
-        # if self.use_pred_normals:
-        #     positions = ray_samples.frustums.get_positions()
-
-        #     positions_flat = self.position_encoding(positions.view(-1, 3))
-        #     pred_normals_inp = torch.cat(
-        #         [positions_flat, density_embedding.view(-1, self.geo_feat_dim)], dim=-1)
-
-        #     x = self.mlp_pred_normals(pred_normals_inp).view(
-        #         *outputs_shape, -1).to(directions)
-        #     outputs[FieldHeadNames.PRED_NORMALS] = self.field_head_pred_normals(
-        #         x)
-
-        h = torch.cat(
-            [
-                d,
-                density_embedding.view(-1, self.geo_feat_dim),
-                # embedded_appearance.view(-1, self.appearance_embedding_dim),
-            ],
-            dim=-1,
-        )
-        rgb = self.mlp_head(h).view(*outputs_shape, -1).to(directions)
-        outputs.update({FieldHeadNames.RGB: rgb})
-
+        diffuse = torch.sigmoid(f_diffuse)
+        f_specular = torch.sigmoid(f_specular)
+        d = self.view_encoder(directions_flat)
+        # d = self.direction_encoding(directions_flat)
+        specular = torch.cat([diffuse, f_specular, d], dim=-1)
+        outputs.update({FieldHeadNames.SH: specular})
+        outputs.update({FieldHeadNames.DIFFUSE: diffuse})
+        outputs.update({FieldHeadNames.DENSITY: sigma})
         return outputs
 
 

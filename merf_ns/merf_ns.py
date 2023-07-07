@@ -39,7 +39,11 @@ from jaxtyping import Float
 from torch import Tensor, nn
 import math
 from nerfstudio.utils.math import components_from_spherical_harmonics, safe_normalize
-
+try:
+    import tinycudann as tcnn
+except ImportError:
+    # tinycudann module doesn't exist
+    pass
 @dataclass
 class MeRFNSConfig(NerfactoModelConfig):
     _target: Type = field(default_factory=lambda: MeRFNSModel)
@@ -49,13 +53,33 @@ class MeRFNSRenderer(SHRenderer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # self.renderer_rgb = RGBRenderer()
+        self.view_encoder, self.view_in_dim = tcnn.Encoding(
+            n_input_dims=3,
+            encoding_config={
+                "otype": "Frequency",
+                "n_frequencies": 4,
+            },
+        )
 
+        self.view_mlp=tcnn.Network(
+           3 + 4 + self.view_in_dim ,
+             3,
+            {
+                "otype": "FullyFusedMLP",
+                "activation": "ReLU",
+                "output_activation": "None",
+                "n_neurons":  16,
+                "n_hidden_layers": 3
+            }
+        )
     def forward(self,
                 sh: Float[Tensor, "*batch num_samples coeffs"],
                 diffuse: Float[Tensor, "*batch num_samples 3"], 
                 directions: Float[Tensor, "*batch num_samples 3"],
                 weights: Float[Tensor, "*batch num_samples 1"],
                 ) -> Float[Tensor, "*batch 3"]:
+        
+        # TODO [23/7/7] 这里需要对specular进行一次MLP和激活，不然specular和视角无关，到这一步的specular只是和dir拼在一起
         sh = sh.view(*sh.shape[:-1], 3, sh.shape[-1] // 3)
         levels = int(math.sqrt(sh.shape[-1]))
         components = components_from_spherical_harmonics(levels=levels, directions=directions)
@@ -169,30 +193,30 @@ class MeRFNSModel(NerfactoModel):
             "depth": depth,
         }
 
-        if self.config.predict_normals:
-            normals = self.renderer_normals(
-                normals=field_outputs[MeRFNSFieldHeadNames.NORMALS], weights=weights)
-            pred_normals = self.renderer_normals(
-                field_outputs[MeRFNSFieldHeadNames.PRED_NORMALS], weights=weights)
-            outputs["normals"] = self.normals_shader(normals)
-            outputs["pred_normals"] = self.normals_shader(pred_normals)
+        # if self.config.predict_normals:
+        #     normals = self.renderer_normals(
+        #         normals=field_outputs[MeRFNSFieldHeadNames.NORMALS], weights=weights)
+        #     pred_normals = self.renderer_normals(
+        #         field_outputs[MeRFNSFieldHeadNames.PRED_NORMALS], weights=weights)
+        #     outputs["normals"] = self.normals_shader(normals)
+        #     outputs["pred_normals"] = self.normals_shader(pred_normals)
         # These use a lot of GPU memory, so we avoid storing them for eval.
         if self.training:
             outputs["weights_list"] = weights_list
             outputs["ray_samples_list"] = ray_samples_list
 
-        if self.training and self.config.predict_normals:
-            outputs["rendered_orientation_loss"] = orientation_loss(
-                weights.detach(
-                ), field_outputs[MeRFNSFieldHeadNames.NORMALS], ray_bundle.directions
-            )
+        # if self.training and self.config.predict_normals:
+        #     outputs["rendered_orientation_loss"] = orientation_loss(
+        #         weights.detach(
+        #         ), field_outputs[MeRFNSFieldHeadNames.NORMALS], ray_bundle.directions
+        #     )
 
-            outputs["rendered_pred_normal_loss"] = pred_normal_loss(
-                weights.detach(),
-                field_outputs[MeRFNSFieldHeadNames.NORMALS].detach(),
-                field_outputs[MeRFNSFieldHeadNames.PRED_NORMALS],
-            )
-
+        #     outputs["rendered_pred_normal_loss"] = pred_normal_loss(
+        #         weights.detach(),
+        #         field_outputs[MeRFNSFieldHeadNames.NORMALS].detach(),
+        #         field_outputs[MeRFNSFieldHeadNames.PRED_NORMALS],
+        #     )
+# 这个地方把propo的depth保存出来了？
         for i in range(self.config.num_proposal_iterations):
             outputs[f"prop_depth_{i}"] = self.renderer_depth(
                 weights=weights_list[i], ray_samples=ray_samples_list[i])
