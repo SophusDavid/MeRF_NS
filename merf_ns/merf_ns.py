@@ -80,17 +80,20 @@ class MeRFNSRenderer(SHRenderer):
                 ) -> Float[Tensor, "*batch 3"]:
         
         # TODO [23/7/7] 这里需要对specular进行一次MLP和激活，不然specular和视角无关，到这一步的specular只是和dir拼在一起
-        sh = sh.view(*sh.shape[:-1], 3, sh.shape[-1] // 3)
-        levels = int(math.sqrt(sh.shape[-1]))
-        components = components_from_spherical_harmonics(levels=levels, directions=directions)
+        # sh = sh.view(*sh.shape[:-1], 3, sh.shape[-1] // 3)
+        rgb=torch.sigmoid(self.view_mlp(sh))
+        # levels = int(math.sqrt(sh.shape[-1]))
+        # components = components_from_spherical_harmonics(levels=levels, directions=directions)
         
-        rgb = sh * components[..., None, :]
-        rgb = torch.sum(rgb, dim=-1)  # [..., num_samples, 3]
-        if self.activation is not None:
-            rgb = self.activation(rgb)
-        if not self.training:
-            rgb = torch.nan_to_num(rgb)
-        rgb=rgb+diffuse
+        # rgb = sh * components[..., None, :]
+        # rgb = torch.sum(rgb, dim=-1)  # [..., num_samples, 3]
+        # if self.activation is not None:
+        #     rgb = self.activation(rgb)
+        # if not self.training:
+        #     rgb = torch.nan_to_num(rgb)
+        # rgb=rgb+diffuse
+        rgb=(rgb+diffuse).view(*weights.shape[:-1], 3)
+        
         rgb = RGBRenderer.combine_rgb(rgb, weights, background_color=self.background_color)
         if not self.training:
             torch.clamp_(rgb, min=0.0, max=1.0)
