@@ -125,17 +125,17 @@ class TCNNMeRFNSField(Field):
             },
         )
 
-        self.view_mlp=tcnn.Network(
-           3 + 4 + self.view_encoder.n_output_dims ,
-             3,
-            {
-                "otype": "FullyFusedMLP",
-                "activation": "ReLU",
-                "output_activation": "None",
-                "n_neurons":  16,
-                "n_hidden_layers": 3
-            }
-        )
+        # self.view_mlp=tcnn.Network(
+        #    3 + 4 + self.view_encoder.n_output_dims ,
+        #      3,
+        #     {
+        #         "otype": "FullyFusedMLP",
+        #         "activation": "ReLU",
+        #         "output_activation": "None",
+        #         "n_neurons":  16,
+        #         "n_hidden_layers": 3
+        #     }
+        # )
         # ******MERF****** 
         self.register_buffer("aabb", aabb)
         self.geo_feat_dim = geo_feat_dim
@@ -227,31 +227,31 @@ class TCNNMeRFNSField(Field):
         return f_sigma, f_diffuse, f_specular
     #　这个地方重载了Field里的forward函数
     # TODO 重载forward 函数
-    def forward(self, ray_samples: RaySamples, compute_normals: bool = False) -> Dict[FieldHeadNames, torch.Tensor]:
+    def forward(self, ray_samples: RaySamples, compute_normals: bool = False) -> Dict[MeRFNSFieldHeadNames, torch.Tensor]:
         """Evaluates the field at points along the ray.
 
         Args:
             ray_samples: Samples to evaluate field on.
         """
-        if compute_normals:
-            with torch.enable_grad():
-                density = self.get_density(ray_samples)
-        else:
-            density = self.get_density(ray_samples)
+        # if compute_normals:
+        #     with torch.enable_grad():
+        #         density = self.get_density(ray_samples)
+        # else:
+        #     density = self.get_density(ray_samples)
 
-        field_outputs = self.get_outputs(ray_samples)
-        field_outputs[MeRFNSFieldHeadNames.DENSITY] = density  # type: ignore
+        # field_outputs = self.get_outputs(ray_samples)
+        # field_outputs[MeRFNSFieldHeadNames.DENSITY] = density  # type: ignore
 
         # if compute_normals:
         #     with torch.enable_grad():
         #         normals = self.get_normals()
         #     field_outputs[FieldHeadNames.NORMALS] = normals  # type: ignore
-        return field_outputs
+        return self.get_outputs(ray_samples)
     
     # TODO 这个地方import utilis里面的ＭｅＲＦＮＳＦｉｅｌｄＮａｍｅ然后输出一下ＳＨ的参数？
     def get_outputs(
         self, ray_samples: RaySamples
-    ) -> Dict[FieldHeadNames, TensorType]:
+    ) -> Dict[MeRFNSFieldHeadNames, TensorType]:
         # 这部分代码是nerf-w做apperance embedding的
         # assert density_embedding is not None
         outputs = {}
@@ -276,11 +276,15 @@ class TCNNMeRFNSField(Field):
         diffuse = torch.sigmoid(f_diffuse)
         f_specular = torch.sigmoid(f_specular)
         d = self.view_encoder(directions_flat)
+        density = trunc_exp(f_sigma.to(positions))
+        # gpu_tracker.track()  
+        density = density * selector[..., None]
         # d = self.direction_encoding(directions_flat)
         specular = torch.cat([diffuse, f_specular, d], dim=-1)
         outputs.update({MeRFNSFieldHeadNames.SH: specular})
         outputs.update({MeRFNSFieldHeadNames.DIFFUSE: diffuse})
         outputs.update({MeRFNSFieldHeadNames.DENSITY: sigma})
+        outputs.update({MeRFNSFieldHeadNames.DENSITY: density})
         return outputs
 
 

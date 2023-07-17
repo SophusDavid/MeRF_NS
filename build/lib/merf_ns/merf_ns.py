@@ -256,6 +256,7 @@ class MeRFNSModel(NerfactoModel):
                 loss_dict["pred_normal_loss"] = self.config.pred_normal_loss_mult * torch.mean(
                     outputs["rendered_pred_normal_loss"]
                 )
+            loss_dict['specular_loss'] =1e-5*(outputs['sh']**2).mean()
         return loss_dict
 
     def get_image_metrics_and_images(
