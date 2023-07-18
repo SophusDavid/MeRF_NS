@@ -284,7 +284,7 @@ class TCNNMeRFNSField(Field):
         specular = torch.cat([diffuse, f_specular, d], dim=-1)
         outputs.update({MeRFNSFieldHeadNames.SH: specular})
         outputs.update({MeRFNSFieldHeadNames.DIFFUSE: diffuse})
-        outputs.update({MeRFNSFieldHeadNames.DENSITY: sigma})
+        # outputs.update({MeRFNSFieldHeadNames.DENSITY: sigma})
         outputs.update({MeRFNSFieldHeadNames.DENSITY: density})
         return outputs
 
