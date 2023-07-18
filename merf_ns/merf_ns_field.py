@@ -270,6 +270,7 @@ class TCNNMeRFNSField(Field):
         positions = positions * selector[..., None]
         positions=positions.view(-1, 3)
         f_sigma, f_diffuse, f_specular = self.common_forward(positions)
+        f_sigma=f_sigma.view(*ray_samples.frustums.shape, -1)
         sigma = trunc_exp(f_sigma - 1)
         directions = shift_directions_for_tcnn(ray_samples.frustums.directions)
         directions_flat = directions.view(-1, 3)

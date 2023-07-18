@@ -1,7 +1,7 @@
 from nerfstudio.models.nerfacto import NerfactoModel, NerfactoModelConfig
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Type,Union,Optional
+from typing import Dict, List, Tuple, Type,Union,Optional,Generator
 
 import numpy as np
 import torch
@@ -16,7 +16,7 @@ import numpy as np
 import torch
 from torch.nn import Parameter
 from typing_extensions import Literal
-
+import contextlib
 from nerfstudio.cameras.rays import RayBundle
 from nerfstudio.engine.callbacks import (
     TrainingCallback,
@@ -114,6 +114,7 @@ class MeRFNSRenderer(SHRenderer):
         Returns:
             Outputs rgb values.
         """
+        
         if ray_indices is not None and num_rays is not None:
             # Necessary for packed samples from volumetric ray sampler
             if background_color == "last_sample":
@@ -146,6 +147,7 @@ class MeRFNSRenderer(SHRenderer):
                 diffuse: Float[Tensor, "*batch num_samples 3"], 
                 directions: Float[Tensor, "*batch num_samples 3"],
                 weights: Float[Tensor, "*batch num_samples 1"],
+                bg_color: Optional[Float[Tensor, "3"]] = None,
                 ) -> Float[Tensor, "*batch 3"]:
         
         # TODO [23/7/7] 这里需要对specular进行一次MLP和激活，不然specular和视角无关，到这一步的specular只是和dir拼在一起
@@ -164,10 +166,20 @@ class MeRFNSRenderer(SHRenderer):
         # # # #     rgb = torch.nan_to_num(rgb)
         # # # # rgb=rgb+diffuse
         # # # rgb=(rgb+diffuse).view(*weights.shape[:-1], 3)
-        
-        rgb = MeRFNSRenderer.combine_rgb(rgb, weights, background_color=self.background_color)
-        if not self.training:
-            torch.clamp_(rgb, min=0.0, max=1.0)
+        if bg_color is None:
+            bg_color = 1
+        weights_sum = torch.sum(weights.squeeze(-1), dim=-1) # [N]
+        sh=sh.view(*weights.shape[:-1],-1)
+        diffuse=diffuse.view(*weights.shape[:-1],-1)
+        diffuse = torch.sum(weights* diffuse, dim=-2) # [N, 3]
+        specular = torch.sum(weights * sh, dim=-2)
+        specular=specular.view([-1,3 + 4 + self.view_encoder.n_output_dims])
+        specular = torch.sigmoid(self.view_mlp(specular))
+        rgb = (diffuse + specular).clamp(0, 1)
+        rgb = rgb + (1 - weights_sum).unsqueeze(-1) * bg_color
+        # rgb = MeRFNSRenderer.combine_rgb(rgb, weights, background_color=self.background_color)
+        # if not self.training:
+        #     torch.clamp_(rgb, min=0.0, max=1.0)
         return rgb
 class MeRFNSModel(NerfactoModel):
     config: MeRFNSConfig
@@ -311,6 +323,7 @@ class MeRFNSModel(NerfactoModel):
         return metrics_dict
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None):
+        # TODO Need help 
         loss_dict = {}
         image = batch["image"].to(self.device)
         loss_dict["rgb_loss"] = self.rgb_loss(image, outputs["rgb"])
@@ -321,17 +334,17 @@ class MeRFNSModel(NerfactoModel):
             assert metrics_dict is not None and "distortion" in metrics_dict
             loss_dict["distortion_loss"] = self.config.distortion_loss_mult * \
                 metrics_dict["distortion"]
-            if self.config.predict_normals:
-                # orientation loss for computed normals
-                loss_dict["orientation_loss"] = self.config.orientation_loss_mult * torch.mean(
-                    outputs["rendered_orientation_loss"]
-                )
+            # if self.config.predict_normals:
+            #     # orientation loss for computed normals
+            #     loss_dict["orientation_loss"] = self.config.orientation_loss_mult * torch.mean(
+            #         outputs["rendered_orientation_loss"]
+            #     )
 
-                # ground truth supervision for normals
-                loss_dict["pred_normal_loss"] = self.config.pred_normal_loss_mult * torch.mean(
-                    outputs["rendered_pred_normal_loss"]
-                )
-            loss_dict['specular_loss'] =1e-5*(outputs['sh']**2).mean()
+            #     # ground truth supervision for normals
+            #     loss_dict["pred_normal_loss"] = self.config.pred_normal_loss_mult * torch.mean(
+            #         outputs["rendered_pred_normal_loss"]
+            #     )
+            # loss_dict['specular_loss'] =1e-5*(outputs['sh']**2).mean()
         return loss_dict
 
     def get_image_metrics_and_images(
