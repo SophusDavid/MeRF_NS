@@ -281,6 +281,7 @@ class MeRFNSModel(NerfactoModel):
             "rgb": rgb,
             "accumulation": accumulation,
             "depth": depth,
+            "sh":sh
         }
 
         # if self.config.predict_normals:
@@ -323,6 +324,7 @@ class MeRFNSModel(NerfactoModel):
         return metrics_dict
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None):
+        # TODO Need help 
         loss_dict = {}
         image = batch["image"].to(self.device)
         loss_dict["rgb_loss"] = self.rgb_loss(image, outputs["rgb"])
@@ -343,7 +345,7 @@ class MeRFNSModel(NerfactoModel):
             #     loss_dict["pred_normal_loss"] = self.config.pred_normal_loss_mult * torch.mean(
             #         outputs["rendered_pred_normal_loss"]
             #     )
-            # loss_dict['specular_loss'] =1e-5*(outputs['sh']**2).mean()
+            loss_dict['specular_loss'] =1e-5*(outputs['sh']**2).mean()
         return loss_dict
 
     def get_image_metrics_and_images(
