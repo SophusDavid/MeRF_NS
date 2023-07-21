@@ -47,6 +47,10 @@ except ImportError:
     # tinycudann module doesn't exist
     pass
 from jaxtyping import Float, Int
+
+from torch.utils.tensorboard import SummaryWriter
+writer = SummaryWriter(log_dir='runs/weights')
+
 from nerfstudio.utils import colors
 BackgroundColor = Union[Literal["random", "last_sample", "black", "white"], Float[Tensor, "3"]]
 BACKGROUND_COLOR_OVERRIDE: Optional[Float[Tensor, "3"]] = None
@@ -184,6 +188,10 @@ class MeRFNSRenderer(SHRenderer):
 class MeRFNSModel(NerfactoModel):
     config: MeRFNSConfig
 
+    ###临时增加记录step###
+    step = 1
+    
+
     def populate_modules(self):
         super().populate_modules()
         if self.config.disable_scene_contraction:
@@ -255,13 +263,39 @@ class MeRFNSModel(NerfactoModel):
     # 计算merf相关的量？
 
     def get_outputs(self, ray_bundle: RayBundle):
-        # print(step)
+        # print(self.step)
+        self.step += 1  # 临时输出用
+
         ray_samples, weights_list, ray_samples_list = self.proposal_sampler(
             ray_bundle, density_fns=self.density_fns)
         field_outputs = self.field(
             ray_samples, compute_normals=self.config.predict_normals)
         weights = ray_samples.get_weights(
             field_outputs[MeRFNSFieldHeadNames.DENSITY])
+        
+        # 输出第64序raysample的density到tensorboard
+        nowSample = 63 # 当前使用的射线序号
+        density = field_outputs[MeRFNSFieldHeadNames.DENSITY]
+        # print(density.shape)
+        nowDensity = torch.squeeze(density[nowSample])
+        for index in range(len(nowDensity)):
+            nowtag = "density"+str(index)
+            writer.add_scalar(tag=nowtag, # 标签，即数据属于哪一类，不同的标签对应不同的图
+                        scalar_value=nowDensity[index],  # 纵坐标的值
+                        global_step=self.step  # 迭代次数，即图的横坐标
+                        )
+        # 输出第64序raysample的weights到tensorboard
+        # print(ray_bundle.shape)->128
+        # print(weights)->128,48,1
+        # print(weights[64].shape)
+        nowWeights = torch.squeeze(weights[nowSample])
+        for index in range(len(nowWeights)):
+            nowtag = "weight"+str(index)
+            writer.add_scalar(tag=nowtag, # 标签，即数据属于哪一类，不同的标签对应不同的图
+                        scalar_value=nowWeights[index],  # 纵坐标的值
+                        global_step=self.step  # 迭代次数，即图的横坐标
+                        )
+
         weights_list.append(weights)
         ray_samples_list.append(ray_samples)
         # 原始的ＲＢＧ计算方式不适用于我们的代码
