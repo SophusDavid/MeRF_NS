@@ -307,7 +307,7 @@ class MeRFNSModel(NerfactoModel):
         #         field_outputs[MeRFNSFieldHeadNames.NORMALS].detach(),
         #         field_outputs[MeRFNSFieldHeadNames.PRED_NORMALS],
         #     )
-# 这个地方把propo的depth保存出来了？
+        # 这个地方把propo的depth保存出来了？
         for i in range(self.config.num_proposal_iterations):
             outputs[f"prop_depth_{i}"] = self.renderer_depth(
                 weights=weights_list[i], ray_samples=ray_samples_list[i])
