@@ -25,8 +25,8 @@ MeRFNS_method = MethodSpecification(config=TrainerConfig(
     pipeline=MeRFNSPipelineConfig(
         datamanager=VanillaDataManagerConfig(
             dataparser=NerfstudioDataParserConfig(),
-            train_num_rays_per_batch=128,
-            eval_num_rays_per_batch=512,
+            train_num_rays_per_batch=64,
+            eval_num_rays_per_batch=64,
             camera_optimizer=CameraOptimizerConfig(
                 mode="SO3xR3", optimizer=AdamOptimizerConfig(lr=6e-4, eps=1e-8, weight_decay=1e-2)
             ),
