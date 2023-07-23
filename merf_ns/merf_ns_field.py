@@ -21,9 +21,9 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 import torch
-from torch import nn
+from torch import nn,Tensor
 from torch.nn.parameter import Parameter
-from torchtyping import TensorType
+# from torchtyping import Tensor
 from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.cameras.rays import RaySamples
 from nerfstudio.data.scene_box import SceneBox
@@ -46,7 +46,7 @@ from nerfstudio.field_components.spatial_distortions import (
     SceneContraction,
     SpatialDistortion,
 )
-from nerfstudio.fields.base_field import Field, shift_directions_for_tcnn
+from nerfstudio.fields.base_field import Field, get_normalized_directions
 from .utils import MeRFNSFieldHeadNames
 try:
     import tinycudann as tcnn
@@ -85,7 +85,7 @@ class TCNNMeRFNSField(Field):
 
     def __init__(
         self,
-        aabb: TensorType,
+        aabb: Tensor,
         num_images: int,
         # num_layers: int = 2,
         # hidden_dim: int = 64,
@@ -157,7 +157,7 @@ class TCNNMeRFNSField(Field):
         # self.pass_semantic_gradients = pass_semantic_gradients
         self.bound=2
     
-    def get_density(self, ray_samples: RaySamples) -> Tuple[TensorType, TensorType]:
+    def get_density(self, ray_samples: RaySamples) -> Tuple[Tensor, Tensor]:
         """Computes and returns the densities."""
         if self.spatial_distortion is not None:
             positions = ray_samples.frustums.get_positions()
@@ -251,7 +251,7 @@ class TCNNMeRFNSField(Field):
     # TODO 这个地方import utilis里面的ＭｅＲＦＮＳＦｉｅｌｄＮａｍｅ然后输出一下ＳＨ的参数？
     def get_outputs(
         self, ray_samples: RaySamples
-    ) -> Dict[MeRFNSFieldHeadNames, TensorType]:
+    ) -> Dict[MeRFNSFieldHeadNames, Tensor]:
         # 这部分代码是nerf-w做apperance embedding的
         # assert density_embedding is not None
         outputs = {}
@@ -272,7 +272,7 @@ class TCNNMeRFNSField(Field):
         f_sigma, f_diffuse, f_specular = self.common_forward(positions)
         f_sigma=f_sigma.view(*ray_samples.frustums.shape, -1)
         # sigma = trunc_exp(f_sigma - 1)
-        directions = shift_directions_for_tcnn(ray_samples.frustums.directions)
+        directions = get_normalized_directions(ray_samples.frustums.directions)
         directions_flat = directions.view(-1, 3)
         diffuse = torch.sigmoid(f_diffuse)
         f_specular = torch.sigmoid(f_specular)
