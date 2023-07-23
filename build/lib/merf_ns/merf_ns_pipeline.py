@@ -45,6 +45,7 @@ class MeRFNSPipelineConfig(VanillaPipelineConfig):
     datamanager: DataManagerConfig = VanillaDataManagerConfig()
     """specifies the datamanager config"""
     model: ModelConfig = ModelConfig()
+    
     """specifies the model config"""
 
 
@@ -131,7 +132,7 @@ class MeRFNSPipeline(VanillaPipeline):
                     self.datamanager.get_param_groups()[camera_opt_param_group][0].data[:, 3:].norm()
                 )
 
-        loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
+        loss_dict = self.model.get_loss_dict(model_outputs, batch,step, metrics_dict)
 
         return model_outputs, loss_dict, metrics_dict
 

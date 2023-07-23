@@ -54,9 +54,6 @@ except ImportError:
     # tinycudann module doesn't exist
     pass
 import inspect
-from .gpu_mem_track import MemTracker  # 引用显存跟踪代码
-frame = inspect.currentframe()     
-gpu_tracker = MemTracker(frame) 
 class TCNNMeRFNSField(Field):
     """Compound Field that uses TCNN
 
@@ -277,7 +274,7 @@ class TCNNMeRFNSField(Field):
         diffuse = torch.sigmoid(f_diffuse)
         f_specular = torch.sigmoid(f_specular)
         d = self.view_encoder(directions_flat)
-        density = trunc_exp(f_sigma.to(positions))
+        density = trunc_exp(f_sigma.to(positions)- 1)
         # gpu_tracker.track()  
         density = density * selector[..., None]
         # d = self.direction_encoding(directions_flat)

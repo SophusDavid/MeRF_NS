@@ -33,6 +33,7 @@ from nerfstudio.model_components.losses import (
     pred_normal_loss,
     
 )
+from nerfstudio.fields.density_fields import HashMLPDensityField
 import nerfacc
 from nerfstudio.utils import colormaps
 from nerfstudio.model_components.renderers import SHRenderer, RGBRenderer
@@ -68,6 +69,16 @@ def background_color_override_context(mode: Float[Tensor, "3"]) -> Generator[Non
 @dataclass
 class MeRFNSConfig(NerfactoModelConfig):
     _target: Type = field(default_factory=lambda: MeRFNSModel)
+    interlevel_loss_mult:float=1.0
+    distortion_loss_mult:float=0.01
+    max_num_iterations: int = 30000
+    lambda_specular:float=1e-5
+    proposal_net_args_list: List[Dict] = field(
+        default_factory=lambda: [
+            {"hidden_dim": 16, "log2_hashmap_size": 16, "num_levels": 10, "max_res": 256, "use_linear": False},
+            {"hidden_dim": 16, "log2_hashmap_size": 16, "num_levels": 10, "max_res": 512, "use_linear": False},
+        ]
+    )
 from .utils import MeRFNSFieldHeadNames
 
 class MeRFNSRenderer(SHRenderer):
@@ -191,6 +202,7 @@ class MeRFNSModel(NerfactoModel):
 
     def populate_modules(self):
         super().populate_modules()
+        # print(self.max_num_iterations)
         if self.config.disable_scene_contraction:
             scene_contraction = None
         else:
@@ -198,6 +210,31 @@ class MeRFNSModel(NerfactoModel):
         self.field = TCNNMeRFNSField(
             self.scene_box.aabb, spatial_distortion=scene_contraction, num_images=self.num_train_data
         )
+        num_prop_nets = self.config.num_proposal_iterations
+        self.proposal_networks = torch.nn.ModuleList()
+        if self.config.use_same_proposal_network:
+            assert len(self.config.proposal_net_args_list) == 1, "Only one proposal network is allowed."
+            prop_net_args = self.config.proposal_net_args_list[0]
+            network = HashMLPDensityField(
+                self.scene_box.aabb,
+                spatial_distortion=scene_contraction,
+                **prop_net_args,
+                implementation=self.config.implementation,
+            )
+            self.proposal_networks.append(network)
+            self.density_fns.extend([network.density_fn for _ in range(num_prop_nets)])
+        else:
+            for i in range(num_prop_nets):
+                prop_net_args = self.config.proposal_net_args_list[min(i, len(self.config.proposal_net_args_list) - 1)]
+                network = HashMLPDensityField(
+                    self.scene_box.aabb,
+                    spatial_distortion=scene_contraction,
+                    **prop_net_args,
+                    implementation=self.config.implementation,
+                )
+                self.proposal_networks.append(network)
+            self.density_fns.extend([network.density_fn for network in self.proposal_networks])
+
         self.renderer_rgb = MeRFNSRenderer()
         pass
 
@@ -354,7 +391,7 @@ class MeRFNSModel(NerfactoModel):
                 outputs["weights_list"], outputs["ray_samples_list"])
         return metrics_dict
 
-    def get_loss_dict(self, outputs, batch, metrics_dict=None):
+    def get_loss_dict(self, outputs, batch, step,metrics_dict=None):
         # TODO Need help 
         loss_dict = {}
         image = batch["image"].to(self.device)
@@ -364,7 +401,7 @@ class MeRFNSModel(NerfactoModel):
                 outputs["weights_list"], outputs["ray_samples_list"]
             )
             assert metrics_dict is not None and "distortion" in metrics_dict
-            loss_dict["distortion_loss"] = self.config.distortion_loss_mult * \
+            loss_dict["distortion_loss"] = self.config.distortion_loss_mult*min(1.0, step / (0.5 * self.config.max_num_iterations)) * \
                 metrics_dict["distortion"]
             # if self.config.predict_normals:
             #     # orientation loss for computed normals
@@ -376,7 +413,7 @@ class MeRFNSModel(NerfactoModel):
             #     loss_dict["pred_normal_loss"] = self.config.pred_normal_loss_mult * torch.mean(
             #         outputs["rendered_pred_normal_loss"]
             #     )
-            loss_dict['specular_loss'] =1e-5*(outputs['sh']**2).mean()
+            loss_dict['specular_loss'] =self.config.lambda_specular*(outputs['sh']**2).mean()
         return loss_dict
 
     def get_image_metrics_and_images(
