@@ -33,7 +33,7 @@ from nerfstudio.model_components.losses import (
     pred_normal_loss,
     
 )
-from nerfstudio.fields.density_fields import HashMLPDensityField
+# from nerfstudio.fields.density_fields import HashMLPDensityField
 import nerfacc
 from nerfstudio.utils import colormaps
 from nerfstudio.model_components.renderers import SHRenderer, RGBRenderer
@@ -50,6 +50,8 @@ except ImportError:
 from jaxtyping import Float, Int
 from nerfstudio.utils import writer
 from nerfstudio.utils import colors
+
+from nerfstudio.utils import writer
 BackgroundColor = Union[Literal["random", "last_sample", "black", "white"], Float[Tensor, "3"]]
 BACKGROUND_COLOR_OVERRIDE: Optional[Float[Tensor, "3"]] = None
 
@@ -80,11 +82,106 @@ class MeRFNSConfig(NerfactoModelConfig):
         ]
     )
 from .utils import MeRFNSFieldHeadNames
+from nerfstudio.cameras.rays import RaySamples
+from nerfstudio.data.scene_box import SceneBox
+from nerfstudio.field_components.activations import trunc_exp
+from nerfstudio.field_components.encodings import HashEncoding
+from nerfstudio.field_components.mlp import MLP
+from nerfstudio.field_components.spatial_distortions import SpatialDistortion
+from nerfstudio.fields.base_field import Field
+class HashMLPDensityField(Field):
+    """A lightweight density field module.
+
+    Args:
+        aabb: parameters of scene aabb bounds
+        num_layers: number of hidden layers
+        hidden_dim: dimension of hidden layers
+        spatial_distortion: spatial distortion module
+        use_linear: whether to skip the MLP and use a single linear layer instead
+    """
+
+    aabb: Tensor
+
+    def __init__(
+        self,
+        aabb: Tensor,
+        num_layers: int = 2,
+        hidden_dim: int = 64,
+        spatial_distortion: Optional[SpatialDistortion] = None,
+        use_linear: bool = False,
+        num_levels: int = 8,
+        max_res: int = 1024,
+        base_res: int = 16,
+        log2_hashmap_size: int = 18,
+        features_per_level: int = 2,
+        implementation: Literal["tcnn", "torch"] = "tcnn",
+    ) -> None:
+        super().__init__()
+        self.register_buffer("aabb", aabb)
+        self.spatial_distortion = spatial_distortion
+        self.use_linear = use_linear
+
+        self.register_buffer("max_res", torch.tensor(max_res))
+        self.register_buffer("num_levels", torch.tensor(num_levels))
+        self.register_buffer("log2_hashmap_size", torch.tensor(log2_hashmap_size))
+        self.bound=2.0
+        self.encoding = HashEncoding(
+            num_levels=num_levels,
+            min_res=base_res,
+            max_res=max_res,
+            log2_hashmap_size=log2_hashmap_size,
+            features_per_level=features_per_level,
+            implementation=implementation,
+        )
+
+        if not self.use_linear:
+            network = MLP(
+                in_dim=self.encoding.get_out_dim(),
+                num_layers=num_layers,
+                layer_width=hidden_dim,
+                out_dim=1,
+                activation=nn.ReLU(),
+                out_activation=None,
+                implementation=implementation,
+            )
+            self.mlp_base = torch.nn.Sequential(self.encoding, network)
+        else:
+            self.linear = torch.nn.Linear(self.encoding.get_out_dim(), 1)
+
+    def get_density(self, ray_samples: RaySamples) -> Tuple[Tensor, None]:
+        if self.spatial_distortion is not None:
+            positions = self.spatial_distortion(ray_samples.frustums.get_positions())
+            positions = (positions + 2.0) / 4.0
+        else:
+            positions = SceneBox.get_normalized_positions(ray_samples.frustums.get_positions(), self.aabb)
+        # Make sure the tcnn gets inputs between 0 and 1.
+        selector = ((positions > 0.0) & (positions < 1.0)).all(dim=-1)
+        # positions = (positions + self.bound) / (2 * self.bound)
+        positions = positions * selector[..., None]
+        positions_flat = positions.view(-1, 3)
+        if not self.use_linear:
+            density_before_activation = (
+                self.mlp_base(positions_flat).view(*ray_samples.frustums.shape, -1).to(positions)
+            )
+        else:
+            x = self.encoding(positions_flat).to(positions)
+            density_before_activation = self.linear(x).view(*ray_samples.frustums.shape, -1)
+
+        # Rectifying the density with an exponential is much more stable than a ReLU or
+        # softplus, because it enables high post-activation (float32) density outputs
+        # from smaller internal (float16) parameters.
+        density = trunc_exp(density_before_activation-1)
+        density = density * selector[..., None]
+        return density, None
+
+    def get_outputs(self, ray_samples: RaySamples, density_embedding: Optional[Tensor] = None) -> dict:
+        return {}
 
 class MeRFNSRenderer(SHRenderer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # self.renderer_rgb = RGBRenderer()
+        # 这个地方的encoding的shape不大一致，缺少了一个原始的x
         self.view_encoder = tcnn.Encoding(
             n_input_dims=3,
             encoding_config={
@@ -94,7 +191,7 @@ class MeRFNSRenderer(SHRenderer):
         )
 
         self.view_mlp=tcnn.Network(
-           3 + 4 + self.view_encoder.n_output_dims ,
+           3 + 4 + self.view_encoder.n_output_dims+3 ,
              3,
             {
                 "otype": "FullyFusedMLP",
@@ -185,7 +282,7 @@ class MeRFNSRenderer(SHRenderer):
         diffuse=diffuse.view(*weights.shape[:-1],-1)
         diffuse = torch.sum(weights* diffuse, dim=-2) # [N, 3]
         specular = torch.sum(weights * sh, dim=-2)
-        specular=specular.view([-1,3 + 4 + self.view_encoder.n_output_dims])
+        # specular=specular.view([-1,3 + 4 + self.view_encoder.n_output_dims])
         specular = torch.sigmoid(self.view_mlp(specular))
         rgb = (diffuse + specular).clamp(0, 1)
         rgb = rgb + (1 - weights_sum).unsqueeze(-1) * bg_color
@@ -193,6 +290,7 @@ class MeRFNSRenderer(SHRenderer):
         # if not self.training:
         #     torch.clamp_(rgb, min=0.0, max=1.0)
         return rgb
+
 class MeRFNSModel(NerfactoModel):
     config: MeRFNSConfig
 
@@ -349,7 +447,8 @@ class MeRFNSModel(NerfactoModel):
             "rgb": rgb,
             "accumulation": accumulation,
             "depth": depth,
-            "sh":sh
+            "sh":sh,
+            'weights':weights,
         }
 
         # if self.config.predict_normals:
@@ -396,24 +495,34 @@ class MeRFNSModel(NerfactoModel):
         loss_dict = {}
         image = batch["image"].to(self.device)
         loss_dict["rgb_loss"] = self.rgb_loss(image, outputs["rgb"])
-        if self.training:
-            loss_dict["interlevel_loss"] = self.config.interlevel_loss_mult * interlevel_loss(
-                outputs["weights_list"], outputs["ray_samples_list"]
-            )
-            assert metrics_dict is not None and "distortion" in metrics_dict
-            loss_dict["distortion_loss"] = self.config.distortion_loss_mult*min(1.0, step / (0.5 * self.config.max_num_iterations)) * \
-                metrics_dict["distortion"]
-            # if self.config.predict_normals:
-            #     # orientation loss for computed normals
-            #     loss_dict["orientation_loss"] = self.config.orientation_loss_mult * torch.mean(
-            #         outputs["rendered_orientation_loss"]
-            #     )
+        # if self.training:
+        #     loss_dict["interlevel_loss"] = self.config.interlevel_loss_mult * interlevel_loss(
+        #         outputs["weights_list"], outputs["ray_samples_list"]
+        #     )
+        #     assert metrics_dict is not None and "distortion" in metrics_dict
+        #     loss_dict["distortion_loss"] = self.config.distortion_loss_mult*min(1.0, step / (0.5 * self.config.max_num_iterations)) * \
+        #         metrics_dict["distortion"]
+        #     # if self.config.predict_normals:
+        #     #     # orientation loss for computed normals
+        #     #     loss_dict["orientation_loss"] = self.config.orientation_loss_mult * torch.mean(
+        #     #         outputs["rendered_orientation_loss"]
+        #     #     )
 
-            #     # ground truth supervision for normals
-            #     loss_dict["pred_normal_loss"] = self.config.pred_normal_loss_mult * torch.mean(
-            #         outputs["rendered_pred_normal_loss"]
-            #     )
-            loss_dict['specular_loss'] =self.config.lambda_specular*(outputs['sh']**2).mean()
+        #     #     # ground truth supervision for normals
+        #     #     loss_dict["pred_normal_loss"] = self.config.pred_normal_loss_mult * torch.mean(
+        #     #         outputs["rendered_pred_normal_loss"]
+        #     #     )
+            # loss_dict['specular_loss'] =self.config.lambda_specular*(outputs['sh']**2).mean()
+        if self.training:
+            writer.put_scalar("train/rgb_loss", loss_dict["rgb_loss"], step)
+            writer.put_hist("train/weights", outputs["weights"], step)
+            # if "weights_list" in outputs.keys() :
+            #     writer.put_scalar("train/interlevel_loss",interlevel_loss(outputs["weights_list"], outputs["ray_samples_list"]),step)
+            # if metrics_dict is not None and  'distortion'in metrics_dict.keys():
+            #     writer.put_scalar("train/distortion_loss", metrics_dict["distortion"], step)
+            # # print(step)
+            # writer.put_scalar("train/specular_loss", (outputs['sh']**2).mean(), step)
+
         return loss_dict
 
     def get_image_metrics_and_images(

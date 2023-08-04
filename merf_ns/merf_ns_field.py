@@ -17,7 +17,7 @@ Field for compound nerf model, adds scene contraction and image embeddings to in
 """
 
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple,Literal,Union
 
 import numpy as np
 import torch
@@ -28,19 +28,9 @@ from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.cameras.rays import RaySamples
 from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.field_components.activations import trunc_exp
-from nerfstudio.field_components.embedding import Embedding
-from nerfstudio.field_components.encodings import Encoding, HashEncoding, SHEncoding
-from nerfstudio.field_components.field_heads import (
-    DensityFieldHead,
-    FieldHead,
-    FieldHeadNames,
-    PredNormalsFieldHead,
-    RGBFieldHead,
-    SemanticFieldHead,
-    TransientDensityFieldHead,
-    TransientRGBFieldHead,
-    UncertaintyFieldHead,
-)
+# from nerfstudio.field_components.embedding import Embedding
+from nerfstudio.field_components.encodings import  HashEncoding
+
 from nerfstudio.field_components.mlp import MLP
 from nerfstudio.field_components.spatial_distortions import (
     SceneContraction,
@@ -53,7 +43,42 @@ try:
 except ImportError:
     # tinycudann module doesn't exist
     pass
-import inspect
+
+class SceneContraction(SpatialDistortion):
+    """Contract unbounded space using the contraction was proposed in MipNeRF-360.
+        We use the following contraction equation:
+
+        .. math::
+
+            f(x) = \\begin{cases}
+                x & ||x|| \\leq 1 \\\\
+                (2 - \\frac{1}{||x||})(\\frac{x}{||x||}) & ||x|| > 1
+            \\end{cases}
+
+        If the order is not specified, we use the Frobenius norm, this will contract the space to a sphere of
+        radius 2. If the order is L_inf (order=float("inf")), we will contract the space to a cube of side length 4.
+        If using voxel based encodings such as the Hash encoder, we recommend using the L_inf norm.
+
+        Args:
+            order: Order of the norm. Default to the Frobenius norm. Must be set to None for Gaussians.
+
+    """
+
+    def __init__(self, order: Optional[Union[float, int]] = None) -> None:
+        super().__init__()
+        self.order = order
+    
+    def forward(self, positions):
+        def contract(x):
+            # x: [..., C]
+            shape, C = x.shape[:-1], x.shape[-1]
+            x = x.view(-1, C)
+            mag, idx = x.abs().max(1, keepdim=True) # [N, 1], [N, 1]
+            scale = 1 / mag.repeat(1, C)
+            scale.scatter_(1, idx, (2 - 1 / mag) / mag)
+            z = torch.where(mag < 1, x, x * scale)
+            return z.view(*shape, C)
+        return contract(positions)
 class TCNNMeRFNSField(Field):
     """Compound Field that uses TCNN
 
@@ -142,7 +167,9 @@ class TCNNMeRFNSField(Field):
         self.register_buffer("log2_hashmap_size",
                              torch.tensor(log2_hashmap_size))
 
-        self.spatial_distortion = spatial_distortion
+        # self.spatial_distortion = spatial_distortion
+        self.spatial_distortion = SceneContraction(order='inf')
+
         self.num_images = num_images
         # self.appearance_embedding_dim = appearance_embedding_dim
         # self.embedding_appearance = Embedding(
@@ -184,7 +211,7 @@ class TCNNMeRFNSField(Field):
         # Rectifying the density with an exponential is much more stable than a ReLU or
         # softplus, because it enables high post-activation (float32) density outputs
         # from smaller internal (float16) parameters.
-        density = trunc_exp(f_sigma.to(positions))
+        density = trunc_exp(f_sigma.to(positions)-1)
         # gpu_tracker.track()  
         density = density * selector[..., None]
         # gpu_tracker.track()  
@@ -192,6 +219,7 @@ class TCNNMeRFNSField(Field):
 
     
     def quantize_feature(self, f, baking=False):
+        # pass
         f[..., 0] = self.quantize(f[..., 0], 14, baking)
         f[..., 1:] = self.quantize(f[..., 1:], 7, baking)
         return f
@@ -230,19 +258,6 @@ class TCNNMeRFNSField(Field):
         Args:
             ray_samples: Samples to evaluate field on.
         """
-        # if compute_normals:
-        #     with torch.enable_grad():
-        #         density = self.get_density(ray_samples)
-        # else:
-        #     density = self.get_density(ray_samples)
-
-        # field_outputs = self.get_outputs(ray_samples)
-        # field_outputs[MeRFNSFieldHeadNames.DENSITY] = density  # type: ignore
-
-        # if compute_normals:
-        #     with torch.enable_grad():
-        #         normals = self.get_normals()
-        #     field_outputs[FieldHeadNames.NORMALS] = normals  # type: ignore
         return self.get_outputs(ray_samples)
     
     # TODO 这个地方import utilis里面的ＭｅＲＦＮＳＦｉｅｌｄＮａｍｅ然后输出一下ＳＨ的参数？
@@ -273,7 +288,7 @@ class TCNNMeRFNSField(Field):
         directions_flat = directions.view(-1, 3)
         diffuse = torch.sigmoid(f_diffuse)
         f_specular = torch.sigmoid(f_specular)
-        d = self.view_encoder(directions_flat)
+        d = torch.cat([self.view_encoder(directions_flat),directions_flat], dim=-1)
         density = trunc_exp(f_sigma.to(positions)- 1)
         # gpu_tracker.track()  
         density = density * selector[..., None]

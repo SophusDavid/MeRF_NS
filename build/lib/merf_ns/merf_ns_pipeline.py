@@ -36,6 +36,7 @@ from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttrib
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import profiler
 
+from nerfstudio.utils import writer
 @dataclass
 class MeRFNSPipelineConfig(VanillaPipelineConfig):
     """Configuration for pipeline instantiation"""
@@ -133,6 +134,13 @@ class MeRFNSPipeline(VanillaPipeline):
                 )
 
         loss_dict = self.model.get_loss_dict(model_outputs, batch,step, metrics_dict)
+        # writer.write_scalar("train/rgb_loss", loss_dict["rgb_loss"], step)
+        # if loss_dict['interlevel_loss'] is not None:
+        #     writer.write_scalar("train/interlevel_loss", loss_dict["interlevel_loss"], step)
+        # if loss_dict['distortion_loss'] is not None:
+        #     writer.write_scalar("train/distortion_loss", loss_dict["distortion_loss"], step)
+        # if loss_dict['specular_loss'] is not None:
+        #     writer.write_scalar("train/specular_loss", loss_dict["specular_loss"], step)
 
         return model_outputs, loss_dict, metrics_dict
 
