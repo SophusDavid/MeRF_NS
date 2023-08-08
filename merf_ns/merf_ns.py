@@ -433,13 +433,13 @@ class MeRFNSModel(NerfactoModel):
         # 原始的ＲＢＧ计算方式不适用于我们的代码
         # rgb = self.renderer_rgb(
         #     rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
-        sh=field_outputs[MeRFNSFieldHeadNames.SH]
-        diffuse=field_outputs[MeRFNSFieldHeadNames.DIFFUSE]
-        
+        # sh=field_outputs[MeRFNSFieldHeadNames.SH]
+        # diffuse=field_outputs[MeRFNSFieldHeadNames.DIFFUSE]
+        color=field_outputs[MeRFNSFieldHeadNames.RGB]
         # weights_sum = torch.sum(weights, dim=-1)
         # depth = torch.sum(weights * rays_t, dim=-1) # [N]
         
-        rgb=self.renderer_rgb(sh,diffuse,ray_bundle.directions,weights)
+        rgb=self.renderer_rgb.combine_rgb(color,weights)
         depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
         accumulation = self.renderer_accumulation(weights=weights)
 
@@ -447,7 +447,7 @@ class MeRFNSModel(NerfactoModel):
             "rgb": rgb,
             "accumulation": accumulation,
             "depth": depth,
-            "sh":sh,
+            # "sh":sh,
             'weights':weights,
         }
 
@@ -495,32 +495,32 @@ class MeRFNSModel(NerfactoModel):
         loss_dict = {}
         image = batch["image"].to(self.device)
         loss_dict["rgb_loss"] = self.rgb_loss(image, outputs["rgb"])
-        # if self.training:
-        #     loss_dict["interlevel_loss"] = self.config.interlevel_loss_mult * interlevel_loss(
-        #         outputs["weights_list"], outputs["ray_samples_list"]
-        #     )
-        #     assert metrics_dict is not None and "distortion" in metrics_dict
-        #     loss_dict["distortion_loss"] = self.config.distortion_loss_mult*min(1.0, step / (0.5 * self.config.max_num_iterations)) * \
-        #         metrics_dict["distortion"]
-        #     # if self.config.predict_normals:
-        #     #     # orientation loss for computed normals
-        #     #     loss_dict["orientation_loss"] = self.config.orientation_loss_mult * torch.mean(
-        #     #         outputs["rendered_orientation_loss"]
-        #     #     )
+        if self.training:
+            loss_dict["interlevel_loss"] = self.config.interlevel_loss_mult * interlevel_loss(
+                outputs["weights_list"], outputs["ray_samples_list"]
+            )
+            assert metrics_dict is not None and "distortion" in metrics_dict
+            loss_dict["distortion_loss"] = self.config.distortion_loss_mult*min(1.0, step / (0.5 * self.config.max_num_iterations)) * \
+                metrics_dict["distortion"]
+            # if self.config.predict_normals:
+            #     # orientation loss for computed normals
+            #     loss_dict["orientation_loss"] = self.config.orientation_loss_mult * torch.mean(
+            #         outputs["rendered_orientation_loss"]
+            #     )
 
-        #     #     # ground truth supervision for normals
-        #     #     loss_dict["pred_normal_loss"] = self.config.pred_normal_loss_mult * torch.mean(
-        #     #         outputs["rendered_pred_normal_loss"]
-        #     #     )
+            #     # ground truth supervision for normals
+            #     loss_dict["pred_normal_loss"] = self.config.pred_normal_loss_mult * torch.mean(
+            #         outputs["rendered_pred_normal_loss"]
+            #     )
             # loss_dict['specular_loss'] =self.config.lambda_specular*(outputs['sh']**2).mean()
         if self.training:
             writer.put_scalar("train/rgb_loss", loss_dict["rgb_loss"], step)
             writer.put_hist("train/weights", outputs["weights"], step)
-            # if "weights_list" in outputs.keys() :
-            #     writer.put_scalar("train/interlevel_loss",interlevel_loss(outputs["weights_list"], outputs["ray_samples_list"]),step)
-            # if metrics_dict is not None and  'distortion'in metrics_dict.keys():
-            #     writer.put_scalar("train/distortion_loss", metrics_dict["distortion"], step)
-            # # print(step)
+            if "weights_list" in outputs.keys() :
+                writer.put_scalar("train/interlevel_loss",interlevel_loss(outputs["weights_list"], outputs["ray_samples_list"]),step)
+            if metrics_dict is not None and  'distortion'in metrics_dict.keys():
+                writer.put_scalar("train/distortion_loss", metrics_dict["distortion"], step)
+            # print(step)
             # writer.put_scalar("train/specular_loss", (outputs['sh']**2).mean(), step)
 
         return loss_dict

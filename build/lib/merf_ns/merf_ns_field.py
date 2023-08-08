@@ -30,7 +30,7 @@ from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.field_components.activations import trunc_exp
 # from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.encodings import  HashEncoding
-
+from nerfstudio.field_components.field_heads import RGBFieldHead,DensityFieldHead
 from nerfstudio.field_components.mlp import MLP
 from nerfstudio.field_components.spatial_distortions import (
     SceneContraction,
@@ -132,13 +132,15 @@ class TCNNMeRFNSField(Field):
         super().__init__()
         
         # ******MERF****** 
-        self.grid = Grid(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=512, output_dim=8, num_layers=2, hidden_dim=32)
+        # self.grid = Grid(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=512, output_dim=3 + 4 + self.view_encoder.n_output_dims, num_layers=2, hidden_dim=32)
+        self.grid = Grid(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=512, output_dim=16, num_layers=2, hidden_dim=32)
+        # self.grid_head=
         
         # triplane
         # if self.opt.use_triplane:
-        self.planeXY = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=8, num_layers=2, hidden_dim=32)
-        self.planeYZ = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=8, num_layers=2, hidden_dim=32)
-        self.planeXZ = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=8, num_layers=2, hidden_dim=32)
+        self.planeXY = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=16, num_layers=2, hidden_dim=32)
+        self.planeYZ = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=16, num_layers=2, hidden_dim=32)
+        self.planeXZ = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=16, num_layers=2, hidden_dim=32)
         self.view_encoder = tcnn.Encoding(
             n_input_dims=3,
             encoding_config={
@@ -146,18 +148,17 @@ class TCNNMeRFNSField(Field):
                 "n_frequencies": 4,
             },
         )
-
-        # self.view_mlp=tcnn.Network(
-        #    3 + 4 + self.view_encoder.n_output_dims ,
-        #      3,
-        #     {
-        #         "otype": "FullyFusedMLP",
-        #         "activation": "ReLU",
-        #         "output_activation": "None",
-        #         "n_neurons":  16,
-        #         "n_hidden_layers": 3
-        #     }
-        # )
+        self.view_mlp=tcnn.Network(
+           15+ self.view_encoder.n_output_dims+3 ,
+             3,
+            {
+                "otype": "FullyFusedMLP",
+                "activation": "ReLU",
+                "output_activation": "None",
+                "n_neurons":  16,
+                "n_hidden_layers": 3
+            }
+        )
         # ******MERF****** 
         self.register_buffer("aabb", aabb)
         # self.geo_feat_dim = geo_feat_dim
@@ -200,7 +201,7 @@ class TCNNMeRFNSField(Field):
             self._sample_locations.requires_grad = True
         positions_flat = positions.view(-1, 3)
         # gpu_tracker.track()  
-        f_sigma, f_diffuse, f_specular=self.common_forward(positions_flat)
+        f_sigma,geo_feature=self.common_forward(positions_flat)
         f_sigma=f_sigma.view(*ray_samples.frustums.shape, -1)
         # sigma = trunc_exp(f_sigma - 1)
         # h = self.mlp_base(positions_flat).view(*ray_samples.frustums.shape, -1)
@@ -246,10 +247,9 @@ class TCNNMeRFNSField(Field):
         f = f + f_plane_01 + f_plane_12 + f_plane_02
         
         f_sigma = f[..., 0]
-        f_diffuse = f[..., 1:4]
-        f_specular = f[..., 4:]
+        geo_feature=f[..., 1:]
 
-        return f_sigma, f_diffuse, f_specular
+        return f_sigma, geo_feature
     #　这个地方重载了Field里的forward函数
     # TODO 重载forward 函数
     def forward(self, ray_samples: RaySamples, compute_normals: bool = False) -> Dict[MeRFNSFieldHeadNames, torch.Tensor]:
@@ -281,21 +281,20 @@ class TCNNMeRFNSField(Field):
         selector = ((positions > 0.0) & (positions < 1.0)).all(dim=-1)
         positions = positions * selector[..., None]
         positions=positions.view(-1, 3)
-        f_sigma, f_diffuse, f_specular = self.common_forward(positions)
+        f_sigma, geo_feature = self.common_forward(positions)
         f_sigma=f_sigma.view(*ray_samples.frustums.shape, -1)
         # sigma = trunc_exp(f_sigma - 1)
         directions = get_normalized_directions(ray_samples.frustums.directions)
         directions_flat = directions.view(-1, 3)
-        diffuse = torch.sigmoid(f_diffuse)
-        f_specular = torch.sigmoid(f_specular)
         d = torch.cat([self.view_encoder(directions_flat),directions_flat], dim=-1)
         density = trunc_exp(f_sigma.to(positions)- 1)
         # gpu_tracker.track()  
         density = density * selector[..., None]
         # d = self.direction_encoding(directions_flat)
-        specular = torch.cat([diffuse, f_specular, d], dim=-1)
-        outputs.update({MeRFNSFieldHeadNames.SH: specular})
-        outputs.update({MeRFNSFieldHeadNames.DIFFUSE: diffuse})
+        rgb =self.view_mlp(torch.cat([geo_feature, d], dim=-1))
+        rgb=rgb.view(*ray_samples.frustums.shape, -1)
+        outputs.update({MeRFNSFieldHeadNames.RGB: rgb})
+        # outputs.update({MeRFNSFieldHeadNames.DIFFUSE: diffuse})
         # outputs.update({MeRFNSFieldHeadNames.DENSITY: sigma})
         outputs.update({MeRFNSFieldHeadNames.DENSITY: density})
         return outputs
