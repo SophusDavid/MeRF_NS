@@ -439,7 +439,7 @@ class MeRFNSModel(NerfactoModel):
         # weights_sum = torch.sum(weights, dim=-1)
         # depth = torch.sum(weights * rays_t, dim=-1) # [N]
         
-        rgb=self.renderer_rgb.combine_rgb(color,weights)
+        rgb=self.renderer_rgb.combine_rgb(color,weights).clamp(0, 1)
         depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
         accumulation = self.renderer_accumulation(weights=weights)
 
@@ -496,11 +496,11 @@ class MeRFNSModel(NerfactoModel):
         image = batch["image"].to(self.device)
         loss_dict["rgb_loss"] = self.rgb_loss(image, outputs["rgb"])
         if self.training:
-            loss_dict["interlevel_loss"] = self.config.interlevel_loss_mult * interlevel_loss(
+            loss_dict["interlevel_loss"] = self.config.interlevel_loss_mult*4 * interlevel_loss(
                 outputs["weights_list"], outputs["ray_samples_list"]
             )
             assert metrics_dict is not None and "distortion" in metrics_dict
-            loss_dict["distortion_loss"] = self.config.distortion_loss_mult*min(1.0, step / (0.5 * self.config.max_num_iterations)) * \
+            loss_dict["distortion_loss"] = self.config.distortion_loss_mult*4*min(1.0, step / (0.5 * self.config.max_num_iterations)) * \
                 metrics_dict["distortion"]
             # if self.config.predict_normals:
             #     # orientation loss for computed normals

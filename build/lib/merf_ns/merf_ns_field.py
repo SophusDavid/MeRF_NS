@@ -133,14 +133,14 @@ class TCNNMeRFNSField(Field):
         
         # ******MERF****** 
         # self.grid = Grid(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=512, output_dim=3 + 4 + self.view_encoder.n_output_dims, num_layers=2, hidden_dim=32)
-        self.grid = Grid(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=512, output_dim=16, num_layers=2, hidden_dim=32)
+        self.grid = Grid(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=16, num_layers=2, hidden_dim=32)
         # self.grid_head=
         
         # triplane
         # if self.opt.use_triplane:
-        self.planeXY = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=16, num_layers=2, hidden_dim=32)
-        self.planeYZ = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=16, num_layers=2, hidden_dim=32)
-        self.planeXZ = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=2048, output_dim=16, num_layers=2, hidden_dim=32)
+        self.planeXY = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=4096, output_dim=16, num_layers=2, hidden_dim=32)
+        self.planeYZ = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=4096, output_dim=16, num_layers=2, hidden_dim=32)
+        self.planeXZ = Plane(level_dim=2, num_levels=16, log2_hashmap_size=19, desired_resolution=4096, output_dim=16, num_layers=2, hidden_dim=32)
         self.view_encoder = tcnn.Encoding(
             n_input_dims=3,
             encoding_config={
